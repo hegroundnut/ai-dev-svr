@@ -52,6 +52,26 @@ class BrainBoxClient:
     #  无人机管理
     # ------------------------------------------------------------------
 
+    def connect_drone(
+        self, base_url: str, ip: str, port: int = 5760, label: str = ""
+    ) -> Dict[str, Any]:
+        """主动 TCP 连接到指定无人机"""
+        return self._post(base_url, self._api_url + "/connect_drone", {
+            "ip": ip,
+            "port": port,
+            "label": label,
+        })
+
+    def disconnect_drone(self, base_url: str, device_id: str) -> Dict[str, Any]:
+        """断开指定无人机的 TCP 连接"""
+        return self._post(base_url, self._api_url + "/disconnect_drone", {
+            "device_id": device_id,
+        })
+
+    def list_connections(self, base_url: str) -> Dict[str, Any]:
+        """列出所有 TCP 主动连接通道"""
+        return self._post(base_url, self._api_url + "/connections")
+
     def scan_drones(self, base_url: str) -> Dict[str, Any]:
         """扫描网络中的无人机"""
         return self._post(base_url, self._api_url+"/scan")

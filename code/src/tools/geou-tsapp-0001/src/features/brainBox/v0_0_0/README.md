@@ -23,7 +23,7 @@ src/features/brainBox/v0_0_0/
 ├── core/
 │   ├── __init__.py
 │   ├── manager.py        # 核心管理器 (整合所有子系统)
-│   ├── mavlink_comm.py   # MAVLink 通信协议
+│   ├── mavlink_comm.py   # MAVLink 通信协议 (支持 UDP 监听与 TCP 主动连接)
 │   ├── drone_manager.py  # 无人机管理器
 │   ├── edge_reporter.py  # 边缘服务上报器 + HTTP 客户端
 │   ├── navigation_service.py  # 导航服务 + 算法注册
@@ -57,7 +57,7 @@ pip install -e ".[mavlink]"
 
 ```bash
 export BRAIN_BOX_ID="my_box_001"
-export BRAIN_BOX_EDGE_URL="http://10.0.0.1:8080"
+export BRAIN_BOX_EDGE_URL="http://10.0.0.1:15000"
 export BRAIN_BOX_LOG_LEVEL=DEBUG
 ```
 
@@ -70,7 +70,7 @@ cd src/features/brainBox/v0_0_0
 python main.py
 ```
 
-服务默认监听 `0.0.0.0:9000`。
+服务默认监听 `0.0.0.0:15001`。
 
 ## API 接口
 
@@ -87,32 +87,35 @@ POST /api/brainBox/CbrainBox/{subfunc}
 | subfunc | 说明 | 参数示例 |
 |---------|------|----------|
 | `get_config` | 获取当前配置信息 | `{}` |
-| `update_config` | 更新配置信息（支持部分更新） | `{"edge": {"base_url": "http://10.0.0.1:8080"}}` |
+| `update_config` | 更新配置信息（支持部分更新） | `{"edge": {"base_url": "http://10.0.0.1:15000"}}` |
 
 ### 无人机管理
 
 | subfunc | 说明 | 参数示例 |
 |---------|------|----------|
-| `scan_drones` | 扫描网络中的无人机 | `{}` |
-| `query_drones` | 查询无人机信息 | `{"device_id": "drone_sim_0"}` |
-| `send_command` | 向指定无人机发送控制指令 | `{"device_id": "drone_sim_0", "command": {"type": "takeoff", "altitude": 50.0}}` |
-| `drones_summary` | 获取无人机汇总信息 | `{}` |
+| `connect_drone` | 主动 TCP 连接到指定无人机 | `{"ip": "192.168.43.1", "port": 5760, "label": "drone_tcp_1"}` |
+| `disconnect_drone` | 断开指定无人机的 TCP 连接 | `{"device_id": "drone_1"}` |
+| `connections` | 列出所有 TCP 主动连接通道 | `{}` |
+| `scan` | 扫描已连接的无人机 | `{}` |
+| `query` | 查询无人机信息 | `{"device_id": "drone_sim_0"}` |
+| `command` | 向指定无人机发送控制指令 | `{"device_id": "drone_sim_0", "command": {"type": "takeoff", "altitude": 50.0}}` |
+| `summary` | 获取无人机汇总信息 | `{}` |
 
 ### 导航
 
 | subfunc | 说明 | 参数示例 |
 |---------|------|----------|
-| `navigation_instruction` | 接收导航指令，生成轨迹 | `{"instruction_id": "nav_001", "device_id": "drone_sim_0", "target_position": {"latitude": 39.91, "longitude": 116.42, "altitude": 120.0}, "algorithm": "simple_linear", "parameters": {"step_count": 5, "speed": 8.0}}` |
-| `execute_trajectory` | 执行导航轨迹 | `{"trajectory_id": "uuid-string"}` |
-| `list_trajectories` | 列出待执行轨迹 | `{}` |
-| `list_algorithms` | 列出可用导航算法 | `{}` |
+| `instruction` | 接收导航指令，生成轨迹 | `{"instruction_id": "nav_001", "device_id": "drone_sim_0", "target_position": {"latitude": 39.91, "longitude": 116.42, "altitude": 120.0}, "algorithm": "simple_linear", "parameters": {"step_count": 5, "speed": 8.0}}` |
+| `execute` | 执行导航轨迹 | `{"trajectory_id": "uuid-string"}` |
+| `trajectories` | 列出待执行轨迹 | `{}` |
+| `algorithms` | 列出可用导航算法 | `{}` |
 
 ### 系统
 
 | subfunc | 说明 | 参数示例 |
 |---------|------|----------|
-| `system_status` | 获取系统状态 | `{}` |
-| `list_protocols` | 列出已注册通信协议 | `{}` |
+| `status` | 获取系统状态 | `{}` |
+| `protocols` | 列出已注册通信协议 | `{}` |
 
 ### 响应格式
 
@@ -135,69 +138,25 @@ POST /api/brainBox/CbrainBox/{subfunc}
 **获取配置:**
 
 ```bash
-curl -X POST http://localhost:9000/api/brainBox/CbrainBox/get_config \
+curl -X POST http://localhost:15001/api/brainBox/CbrainBox/get_config \
   -H "Content-Type: application/json" \
   -d '{}'
-```
-
-返回:
-
-```json
-{
-    "code": 0,
-    "msg": "success",
-    "data": {
-        "box_id": "brain_box_001",
-        "edge": {
-            "base_url": "http://192.168.1.100:8080",
-            "heartbeat_path": "/api/v1/brain-box/heartbeat",
-            "drone_report_path": "/api/v1/brain-box/drone-report",
-            "trajectory_report_path": "/api/v1/brain-box/trajectory-report",
-            "heartbeat_interval": 5.0,
-            "report_interval": 2.0,
-            "timeout": 10.0
-        },
-        "mavlink": {
-            "connection_string": "udpin:0.0.0.0:14550",
-            "connections": [],
-            "system_id": 255,
-            "component_id": 0,
-            "scan_interval": 3.0,
-            "heartbeat_timeout": 10.0,
-            "baud_rate": 57600
-        },
-        "logging": {
-            "level": "INFO",
-            "console_enabled": true,
-            "file_enabled": true,
-            "log_dir": "logs",
-            "log_file": "brain_box.log",
-            "max_bytes": 10485760,
-            "backup_count": 5,
-            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-        },
-        "storage": {
-            "db_path": "data/brain_box.db",
-            "device_evict_timeout": 60.0
-        }
-    }
-}
 ```
 
 **更新配置 (部分更新):**
 
 ```bash
-curl -X POST http://localhost:9000/api/brainBox/CbrainBox/update_config \
+curl -X POST http://localhost:15001/api/brainBox/CbrainBox/update_config \
   -H "Content-Type: application/json" \
-  -d '{"edge": {"base_url": "http://10.0.0.1:8080", "heartbeat_interval": 10.0}}'
+  -d '{"edge": {"base_url": "http://10.0.0.1:15000", "heartbeat_interval": 10.0}}'
 ```
 
-**更新 box_id:**
+**主动连接 TCP 无人机:**
 
 ```bash
-curl -X POST http://localhost:9000/api/brainBox/CbrainBox/update_config \
+curl -X POST http://localhost:15001/api/brainBox/CbrainBox/connect_drone \
   -H "Content-Type: application/json" \
-  -d '{"box_id": "my_new_box_id"}'
+  -d '{"ip": "192.168.43.1", "port": 5760}'
 ```
 
 ## 扩展
@@ -253,10 +212,10 @@ ruff check src/
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `BRAIN_BOX_CONFIG` | 配置文件路径 | `config.yaml` |
-| `BRAIN_BOX_EDGE_URL` | 边缘服务地址 | `http://192.168.1.100:8080` |
-| `BRAIN_BOX_EDGE_HEARTBEAT_PATH` | 心跳上报路径 | `/api/v1/brain-box/heartbeat` |
-| `BRAIN_BOX_EDGE_DRONE_REPORT_PATH` | 无人机上报路径 | `/api/v1/brain-box/drone-report` |
-| `BRAIN_BOX_EDGE_TRAJECTORY_REPORT_PATH` | 轨迹上报路径 | `/api/v1/brain-box/trajectory-report` |
+| `BRAIN_BOX_EDGE_URL` | 边缘服务地址 | `http://127.0.0.1:15000` |
+| `BRAIN_BOX_EDGE_HEARTBEAT_PATH` | 心跳上报路径 | `/api/manageServer/CmanageServer/heartbeat` |
+| `BRAIN_BOX_EDGE_DRONE_REPORT_PATH` | 无人机上报路径 | `/api/manageServer/CmanageServer/drone_report` |
+| `BRAIN_BOX_EDGE_TRAJECTORY_REPORT_PATH` | 轨迹上报路径 | `/api/manageServer/CmanageServer/trajectory_report` |
 | `BRAIN_BOX_MAVLINK_CONNECTION` | MAVLink 连接串 | `udpin:0.0.0.0:14550` |
 | `BRAIN_BOX_LOG_LEVEL` | 日志级别 | `INFO` |
 | `BRAIN_BOX_LOG_DIR` | 日志目录 | `logs` |

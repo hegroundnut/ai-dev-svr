@@ -304,6 +304,47 @@ class EdgeManager:
     #  转发指令（edge_server → brain_box）
     # ==================================================================
 
+    def forward_connect_drone(
+        self, box_id: str, ip: str, port: int = 5760, label: str = ""
+    ) -> Dict[str, Any]:
+        """转发 TCP 连接无人机指令到指定类脑盒子"""
+        with self._lock_internal:
+            box = self._brain_boxes.get(box_id)
+            if not box:
+                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
+            if box.status == BrainBoxStatus.OFFLINE:
+                return {"code": -1, "msg": f"类脑盒子 {box_id} 离线", "data": {}}
+            base_url = box.base_url
+
+        result = self._client.connect_drone(base_url, ip=ip, port=port, label=label)
+        return {"code": 0, "msg": "success", "data": result}
+
+    def forward_disconnect_drone(self, box_id: str, device_id: str) -> Dict[str, Any]:
+        """转发断开无人机指令到指定类脑盒子"""
+        with self._lock_internal:
+            box = self._brain_boxes.get(box_id)
+            if not box:
+                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
+            if box.status == BrainBoxStatus.OFFLINE:
+                return {"code": -1, "msg": f"类脑盒子 {box_id} 离线", "data": {}}
+            base_url = box.base_url
+
+        result = self._client.disconnect_drone(base_url, device_id=device_id)
+        return {"code": 0, "msg": "success", "data": result}
+
+    def forward_list_connections(self, box_id: str) -> Dict[str, Any]:
+        """转发查询 TCP 连接列表指令到指定类脑盒子"""
+        with self._lock_internal:
+            box = self._brain_boxes.get(box_id)
+            if not box:
+                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
+            if box.status == BrainBoxStatus.OFFLINE:
+                return {"code": -1, "msg": f"类脑盒子 {box_id} 离线", "data": {}}
+            base_url = box.base_url
+
+        result = self._client.list_connections(base_url)
+        return {"code": 0, "msg": "success", "data": result}
+
     def forward_scan_drones(self, box_id: str) -> Dict[str, Any]:
         """转发扫描指令到指定类脑盒子"""
         with self._lock_internal:

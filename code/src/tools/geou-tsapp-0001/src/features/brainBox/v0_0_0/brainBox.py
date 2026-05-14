@@ -15,7 +15,10 @@
     update_config         更新配置信息
 
   无人机管理:
-    scan_drones           扫描网络中的无人机
+    connect_drone         主动 TCP 连接到指定无人机
+    disconnect_drone      断开指定无人机的 TCP 连接
+    connections           列出所有 TCP 主动连接通道
+    scan_drones           扫描已连接的无人机
     query_drones          查询无人机信息
     send_command          向指定无人机发送控制指令
     drones_summary        获取无人机汇总信息
@@ -45,6 +48,21 @@ update_config:
         "scan_interval": 5.0
     }
 }
+
+connect_drone:
+{
+    "ip": "192.168.43.1",
+    "port": 5760,
+    "label": "drone_tcp_1"
+}
+
+disconnect_drone:
+{
+    "device_id": "drone_1"
+}
+
+connections:
+{}
 
 scan_drones:
 {}
@@ -173,6 +191,26 @@ class CbrainBox:
     # ==================================================================
     #  无人机管理
     # ==================================================================
+
+    async def connect_drone(self, params):
+        """主动 TCP 连接到指定无人机."""
+        ip = params.get("ip", "")
+        self.progress_callback(10, f"正在连接无人机 {ip}")
+        result = await self._manager.connect_drone(params)
+        return self._handle_result("connect_drone", result)
+
+    async def disconnect_drone(self, params):
+        """断开指定无人机的 TCP 连接."""
+        device_id = params.get("device_id", "")
+        self.progress_callback(10, f"正在断开无人机 {device_id}")
+        result = await self._manager.disconnect_drone(params)
+        return self._handle_result("disconnect_drone", result)
+
+    def connections(self, params):
+        """列出所有 TCP 主动连接通道."""
+        self.progress_callback(10, "正在查询 TCP 连接列表")
+        result = self._manager.list_connections()
+        return self._handle_result("connections", result)
 
     async def scan(self, params):
         """扫描网络中的无人机."""

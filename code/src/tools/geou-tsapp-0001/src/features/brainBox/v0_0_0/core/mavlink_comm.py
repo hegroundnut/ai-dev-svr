@@ -1,4 +1,13 @@
-"""MAVLink 通信协议实现 — 支持多连接通道与无人机通信."""
+"""MAVLink 通信协议实现 — 支持多连接通道与无人机通信.
+
+连接模式说明
+------------
+- **被动模式（UDP 监听）**: 无人机主动连接 brainBox，brainBox 监听指定端口。
+  连接串格式: ``udpin:0.0.0.0:14550``
+- **主动模式（TCP 连接）**: brainBox 主动 TCP 连接无人机，适用于无人机开放 TCP 端口的场景。
+  连接串格式: ``tcp:192.168.43.1:5760``
+  通过 :meth:`MAVLinkProtocol.connect_drone` 动态添加 TCP 连接。
+"""
 
 from __future__ import annotations
 
@@ -131,6 +140,20 @@ class _MAVLinkChannel:
                     _process_heartbeat(msg, devices, self.label)
                 elif msg_type == "GLOBAL_POSITION_INT":
                     _process_position(msg, devices)
+                elif msg_type == "ATTITUDE":
+                    _process_attitude(msg, devices)
+                elif msg_type == "VFR_HUD":
+                    _process_vfr_hud(msg, devices)
+                elif msg_type == "BATTERY_STATUS":
+                    _process_battery(msg, devices)
+                elif msg_type == "SYS_STATUS":
+                    _process_sys_status(msg, devices)
+                elif msg_type == "RAW_IMU":
+                    _process_raw_imu(msg, devices)
+                elif msg_type == "SCALED_PRESSURE":
+                    _process_scaled_pressure(msg, devices)
+                elif msg_type == "GPS_RAW_INT":
+                    _process_gps_raw(msg, devices)
                 elif msg_type == "COMMAND_ACK":
                     logger.debug(
                         "收到指令确认: command=%s, result=%s",
@@ -196,11 +219,27 @@ def _parse_port(connection_string: str) -> int:
     return _DEFAULT_PORT
 
 
+def _parse_ip(connection_string: str) -> str:
+    """从 TCP 连接字符串中提取 IP 地址，如 'tcp:192.168.43.1:5760' → '192.168.43.1'."""
+    parts = connection_string.split(":")
+    if len(parts) >= 3:
+        return parts[1]
+    return ""
+
+
 def _process_heartbeat(
     msg: Any, devices: dict[str, DeviceInfo], channel_label: str
 ) -> None:
     sys_id = msg.get_srcSystem()
     device_id = f"drone_{sys_id}"
+
+    try:
+        from pymavlink import mavutil  # noqa: PLC0415
+        mode = mavutil.mode_string_v10(msg)
+    except Exception:
+        mode = str(msg.custom_mode)
+
+    arm_state = "已解锁" if (msg.base_mode & 128) else "已锁定"
 
     if device_id not in devices:
         devices[device_id] = DeviceInfo(
@@ -213,6 +252,8 @@ def _process_heartbeat(
                 "mav_type": msg.type,
                 "system_status": msg.system_status,
                 "channel": channel_label,
+                "flight_mode": mode,
+                "arm_state": arm_state,
             },
         )
         logger.info(
@@ -226,10 +267,12 @@ def _process_heartbeat(
     device.last_heartbeat = time.time()
     device.status = DeviceStatus.ONLINE
     device.metadata["system_status"] = msg.system_status
+    device.metadata["flight_mode"] = mode
+    device.metadata["arm_state"] = arm_state
 
 
 def _process_position(msg: Any, devices: dict[str, DeviceInfo]) -> None:
-    """处理位置消息."""
+    """处理全球位置消息 (GLOBAL_POSITION_INT)."""
     sys_id = msg.get_srcSystem()
     device_id = f"drone_{sys_id}"
     device = devices.get(device_id)
@@ -240,6 +283,114 @@ def _process_position(msg: Any, devices: dict[str, DeviceInfo]) -> None:
             "altitude": msg.alt / 1000.0,
             "relative_alt": msg.relative_alt / 1000.0,
             "heading": msg.hdg / 100.0,
+        }
+
+
+def _process_attitude(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理姿态消息 (ATTITUDE) — 滚转/俯仰/偏航."""
+    sys_id = msg.get_srcSystem()
+    device_id = f"drone_{sys_id}"
+    device = devices.get(device_id)
+    if device:
+        device.metadata["attitude"] = {
+            "roll": round(msg.roll, 4),
+            "pitch": round(msg.pitch, 4),
+            "yaw": round(msg.yaw, 4),
+            "rollspeed": round(msg.rollspeed, 4),
+            "pitchspeed": round(msg.pitchspeed, 4),
+            "yawspeed": round(msg.yawspeed, 4),
+        }
+
+
+def _process_vfr_hud(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理速度/油门消息 (VFR_HUD) — 空速/地速/油门."""
+    sys_id = msg.get_srcSystem()
+    device_id = f"drone_{sys_id}"
+    device = devices.get(device_id)
+    if device:
+        device.metadata["velocity"] = {
+            "airspeed": round(msg.airspeed, 2),
+            "groundspeed": round(msg.groundspeed, 2),
+            "throttle": msg.throttle,
+            "climb": round(msg.climb, 2),
+        }
+
+
+def _process_battery(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理电池状态消息 (BATTERY_STATUS) — 电压/电流/电量."""
+    sys_id = msg.get_srcSystem()
+    device_id = f"drone_{sys_id}"
+    device = devices.get(device_id)
+    if device:
+        voltage = msg.voltages[0] / 1000.0 if msg.voltages[0] != 0xFFFF else 0.0
+        current = msg.current_battery / 100.0 if msg.current_battery != -1 else 0.0
+        device.metadata["battery"] = {
+            "voltage": round(voltage, 3),
+            "current": round(current, 2),
+            "remaining": msg.battery_remaining,
+        }
+
+
+def _process_sys_status(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理系统状态消息 (SYS_STATUS) — CPU 占用/传感器健康."""
+    sys_id = msg.get_srcSystem()
+    device_id = f"drone_{sys_id}"
+    device = devices.get(device_id)
+    if device:
+        device.metadata["sys_status"] = {
+            "cpu_load": round(msg.load / 10.0, 1),
+            "sensors_present": msg.onboard_control_sensors_present,
+            "sensors_enabled": msg.onboard_control_sensors_enabled,
+            "sensors_health": msg.onboard_control_sensors_health,
+        }
+
+
+def _process_raw_imu(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理 IMU 原始数据 (RAW_IMU) — 加速度/陀螺仪/罗盘."""
+    sys_id = msg.get_srcSystem()
+    device_id = f"drone_{sys_id}"
+    device = devices.get(device_id)
+    if device:
+        device.metadata["imu"] = {
+            "xacc": msg.xacc,
+            "yacc": msg.yacc,
+            "zacc": msg.zacc,
+            "xgyro": msg.xgyro,
+            "ygyro": msg.ygyro,
+            "zgyro": msg.zgyro,
+            "xmag": msg.xmag,
+            "ymag": msg.ymag,
+            "zmag": msg.zmag,
+        }
+
+
+def _process_scaled_pressure(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理气压计消息 (SCALED_PRESSURE) — 气压/温度."""
+    sys_id = msg.get_srcSystem()
+    device_id = f"drone_{sys_id}"
+    device = devices.get(device_id)
+    if device:
+        device.metadata["barometer"] = {
+            "press_abs": round(msg.press_abs, 3),
+            "press_diff": round(msg.press_diff, 3),
+            "temperature": round(msg.temperature / 100.0, 1),
+        }
+
+
+def _process_gps_raw(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理 GPS 原始数据 (GPS_RAW_INT) — 经纬度/卫星数."""
+    sys_id = msg.get_srcSystem()
+    device_id = f"drone_{sys_id}"
+    device = devices.get(device_id)
+    if device:
+        device.metadata["gps"] = {
+            "latitude": msg.lat / 1e7,
+            "longitude": msg.lon / 1e7,
+            "altitude": msg.alt / 1000.0,
+            "satellites_visible": msg.satellites_visible,
+            "fix_type": msg.fix_type,
+            "eph": msg.eph,
+            "epv": msg.epv,
         }
 
 
@@ -263,19 +414,31 @@ class MAVLinkProtocol(DeviceProtocol):
     """
     MAVLink 通信协议实现（多连接通道）.
 
-    支持同时在多个端口/地址上监听和发送 MAVLink 消息，
-    每个通道可以是 UDP、TCP 或串口连接。
+    支持两种连接模式：
+
+    1. **被动模式（UDP 监听）**: 无人机主动连接 brainBox。
+       连接串示例: ``udpin:0.0.0.0:14550``
+
+    2. **主动模式（TCP 连接）**: brainBox 主动 TCP 连接无人机。
+       连接串示例: ``tcp:192.168.43.1:5760``
+       通过 :meth:`connect_drone` 动态添加，通过 :meth:`disconnect_drone` 断开。
 
     UDP 通信架构:
     - 类脑盒子: udpin:0.0.0.0:14550  → 监听端口
     - 无人机:   udpout:brain_box_ip:14550 → 主动连接
     - udpin 会记住每台无人机的地址，发送指令时自动路由到正确目标
+
+    TCP 通信架构:
+    - 类脑盒子: tcp:drone_ip:5760  → 主动连接
+    - 无人机:   开放 TCP 5760 端口 → 等待连接
     """
 
     def __init__(self, config: MAVLinkConfig) -> None:
         self._config = config
         self._devices: dict[str, DeviceInfo] = {}
         self._channels: list[_MAVLinkChannel] = []
+        # device_id → channel label 映射，用于 TCP 主动连接的断开管理
+        self._tcp_device_channel: dict[str, str] = {}
 
     @property
     def protocol_name(self) -> str:
@@ -312,6 +475,7 @@ class MAVLinkProtocol(DeviceProtocol):
             except Exception:
                 logger.exception("MAVLink 通道 '%s' 关闭异常", ch.label)
         self._channels.clear()
+        self._tcp_device_channel.clear()
         logger.info("MAVLink 所有通道已断开")
 
     async def scan_devices(self) -> list[DeviceInfo]:
@@ -363,6 +527,134 @@ class MAVLinkProtocol(DeviceProtocol):
             "message": f"模拟发送 {len(waypoints)} 个航点到 {device_id}",
             "waypoint_count": len(waypoints),
         }
+
+    # ── TCP 主动连接管理 ──────────────────────────────────────
+
+    async def connect_drone(
+        self, ip: str, port: int, label: str = ""
+    ) -> dict[str, Any]:
+        """
+        主动 TCP 连接到指定无人机.
+
+        brainBox 作为客户端，主动连接无人机的 TCP 端口（通常为 5760）。
+        连接成功后等待心跳包，自动注册设备。
+
+        Args:
+            ip: 无人机 IP 地址，如 ``"192.168.43.1"``
+            port: 无人机 TCP 端口，如 ``5760``
+            label: 连接标签（可选，默认为 ``"tcp:{ip}:{port}"``）
+
+        Returns:
+            dict: ``{"success": True, "channel_label": ..., "connection_string": ...}``
+        """
+        connection_string = f"tcp:{ip}:{port}"
+        if not label:
+            label = connection_string
+
+        # 检查是否已存在相同连接
+        for ch in self._channels:
+            if ch.entry.connection_string == connection_string:
+                return {
+                    "success": False,
+                    "error": f"连接 {connection_string} 已存在 (通道: {ch.label})",
+                }
+
+        entry = MAVLinkConnectionEntry(
+            connection_string=connection_string,
+            label=label,
+            baud_rate=self._config.baud_rate,
+        )
+        channel = _MAVLinkChannel(
+            entry=entry,
+            system_id=self._config.system_id,
+            component_id=self._config.component_id,
+        )
+        try:
+            await channel.open(self._devices)
+            self._channels.append(channel)
+            logger.info("TCP 主动连接成功: %s", connection_string)
+            return {
+                "success": True,
+                "channel_label": label,
+                "connection_string": connection_string,
+            }
+        except Exception as e:
+            logger.exception("TCP 主动连接失败: %s", connection_string)
+            return {"success": False, "error": str(e)}
+
+    async def disconnect_drone(self, device_id: str) -> dict[str, Any]:
+        """
+        断开指定无人机的 TCP 连接.
+
+        仅对通过 :meth:`connect_drone` 建立的 TCP 主动连接有效。
+        UDP 被动连接通道不会被此方法关闭。
+
+        Args:
+            device_id: 无人机设备 ID，如 ``"drone_1"``
+
+        Returns:
+            dict: ``{"success": True, "device_id": ..., "channel_label": ...}``
+        """
+        device = self._devices.get(device_id)
+        if not device:
+            return {"success": False, "error": f"设备 {device_id} 未找到"}
+
+        channel = self._find_channel_for_device(device)
+        if not channel:
+            return {"success": False, "error": f"设备 {device_id} 未找到对应通道"}
+
+        # 只允许断开 TCP 主动连接通道
+        if not channel.entry.connection_string.startswith("tcp:"):
+            return {
+                "success": False,
+                "error": f"通道 '{channel.label}' 为非 TCP 通道，不支持单独断开",
+            }
+
+        channel_label = channel.label
+        await channel.close()
+        self._channels.remove(channel)
+
+        # 移除该通道下的所有设备
+        removed = [
+            did for did, d in self._devices.items()
+            if d.metadata.get("channel") == channel_label
+        ]
+        for did in removed:
+            self._devices.pop(did, None)
+
+        logger.info(
+            "TCP 连接已断开: %s，移除设备: %s",
+            channel_label,
+            removed,
+        )
+        return {
+            "success": True,
+            "device_id": device_id,
+            "channel_label": channel_label,
+            "removed_devices": removed,
+        }
+
+    def list_tcp_connections(self) -> list[dict[str, Any]]:
+        """列出所有 TCP 主动连接通道信息."""
+        result = []
+        for ch in self._channels:
+            if ch.entry.connection_string.startswith("tcp:"):
+                ip = _parse_ip(ch.entry.connection_string)
+                port = _parse_port(ch.entry.connection_string)
+                # 找到该通道下的设备
+                channel_devices = [
+                    did for did, d in self._devices.items()
+                    if d.metadata.get("channel") == ch.label
+                ]
+                result.append({
+                    "label": ch.label,
+                    "connection_string": ch.entry.connection_string,
+                    "ip": ip,
+                    "port": port,
+                    "simulated": ch.simulated,
+                    "devices": channel_devices,
+                })
+        return result
 
     # ── 内部方法 ──────────────────────────────────────────────
 
@@ -435,8 +727,20 @@ class MAVLinkProtocol(DeviceProtocol):
                     0, 0, 0, 0, 0,
                     int(lat * 1e7), int(lon * 1e7), alt,
                 )
+            elif cmd_type == "set_mode":
+                mode_name = command.get("mode", "STABILIZE")
+                mode_mapping = conn.mode_mapping()
+                if mode_name in mode_mapping:
+                    mode_id = mode_mapping[mode_name]
+                    conn.mav.set_mode_send(
+                        target,
+                        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                        mode_id,
+                    )
+                else:
+                    raise ValueError(f"未知飞行模式: {mode_name}")
 
-        if cmd_type not in ("arm", "disarm", "takeoff", "land", "goto"):
+        if cmd_type not in ("arm", "disarm", "takeoff", "land", "goto", "set_mode"):
             return {"success": False, "error": f"未知指令类型: {cmd_type}"}
 
         await channel.send_to_device(target, do_send)

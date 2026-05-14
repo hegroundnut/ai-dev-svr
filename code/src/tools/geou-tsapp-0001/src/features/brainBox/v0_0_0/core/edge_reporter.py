@@ -144,6 +144,17 @@ class EdgeReporter:
                     "status": "running",
                     "drone_count": summary["total"],
                     "online_count": summary["online"],
+                    # 携带在线设备的简要信息（device_id + status + flight_mode + arm_state）
+                    "online_devices": [
+                        {
+                            "device_id": d["device_id"],
+                            "status": d["status"],
+                            "flight_mode": d.get("metadata", {}).get("flight_mode", ""),
+                            "arm_state": d.get("metadata", {}).get("arm_state", ""),
+                        }
+                        for d in summary["devices"]
+                        if d["status"] == "online"
+                    ],
                 }
                 await self._edge_client.send_heartbeat(payload)
                 logger.debug("心跳已发送")
@@ -152,7 +163,7 @@ class EdgeReporter:
             await asyncio.sleep(self._heartbeat_interval)
 
     async def _report_loop(self) -> None:
-        """周期性上报无人机状态."""
+        """周期性上报无人机状态（含完整传感器 metadata）."""
         while self._running:
             try:
                 summary = self._drone_manager.get_all_devices_summary()
@@ -160,6 +171,9 @@ class EdgeReporter:
                     payload = {
                         "box_id": self._box_id,
                         "timestamp": time.time(),
+                        # devices 列表包含完整 DeviceInfo.to_dict()，
+                        # metadata 字段中携带 attitude/velocity/battery/
+                        # sys_status/imu/barometer/gps/flight_mode/arm_state
                         "devices": summary["devices"],
                     }
                     await self._edge_client.report_drone_status(payload)

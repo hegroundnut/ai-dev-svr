@@ -25,6 +25,9 @@
     trajectory_report     接收导航轨迹上报
 
   指令转发（边缘服务器 → 类脑盒子）:
+    connect_drone         转发 TCP 连接无人机指令到类脑盒子
+    disconnect_drone      转发断开无人机指令到类脑盒子
+    list_connections      转发查询 TCP 连接列表指令到类脑盒子
     scan_drones           转发扫描指令到类脑盒子
     query_drones          转发查询指令到类脑盒子
     send_command          转发控制指令到类脑盒子
@@ -93,6 +96,25 @@ trajectory_report (类脑盒子上报):
         "total_distance": 1287.45,
         "estimated_time": 160.93
     }
+}
+
+connect_drone:
+{
+    "box_id": "brain_box_001",
+    "ip": "192.168.43.1",
+    "port": 5760,
+    "label": "drone_tcp_1"
+}
+
+disconnect_drone:
+{
+    "box_id": "brain_box_001",
+    "device_id": "drone_1"
+}
+
+list_connections:
+{
+    "box_id": "brain_box_001"
 }
 
 scan_drones:
@@ -303,6 +325,31 @@ class CmanageServer:
     # ==================================================================
     #  指令转发（边缘服务器 → 类脑盒子）
     # ==================================================================
+
+    def connect_drone(self, params):
+        """转发 TCP 连接无人机指令到指定类脑盒子"""
+        box_id = params["box_id"]
+        ip = params["ip"]
+        port = params.get("port", 5760)
+        label = params.get("label", "")
+        self.progress_callback(10, f"正在转发连接无人机指令 (brain_box={box_id}, ip={ip}:{port})")
+        result = self._manager.forward_connect_drone(box_id, ip, port, label)
+        return self._handle_result("connect_drone", result)
+
+    def disconnect_drone(self, params):
+        """转发断开无人机指令到指定类脑盒子"""
+        box_id = params["box_id"]
+        device_id = params["device_id"]
+        self.progress_callback(10, f"正在转发断开无人机指令 (brain_box={box_id}, device={device_id})")
+        result = self._manager.forward_disconnect_drone(box_id, device_id)
+        return self._handle_result("disconnect_drone", result)
+
+    def list_connections(self, params):
+        """转发查询 TCP 连接列表指令到指定类脑盒子"""
+        box_id = params["box_id"]
+        self.progress_callback(10, f"正在查询 TCP 连接列表 (brain_box={box_id})")
+        result = self._manager.forward_list_connections(box_id)
+        return self._handle_result("list_connections", result)
 
     def scan_drones(self, params):
         """转发扫描指令到指定类脑盒子"""

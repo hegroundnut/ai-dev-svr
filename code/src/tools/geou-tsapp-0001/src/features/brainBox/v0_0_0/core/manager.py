@@ -86,6 +86,36 @@ class BrainBoxManager:
 
     # ── 无人机管理 ──
 
+    async def connect_drone(self, params: dict[str, Any]) -> dict[str, Any]:
+        """主动 TCP 连接到指定无人机."""
+        ip = params.get("ip", "")
+        port = params.get("port", 5760)
+        label = params.get("label", "")
+        if not ip:
+            return {"code": -1, "msg": "缺少必要参数: ip", "data": {}}
+        result = await self._mavlink.connect_drone(ip=ip, port=int(port), label=label)
+        if result.get("success", False):
+            return {"code": 0, "msg": "TCP 连接已建立", "data": result}
+        return {"code": -1, "msg": result.get("error", "连接失败"), "data": result}
+
+    async def disconnect_drone(self, params: dict[str, Any]) -> dict[str, Any]:
+        """断开指定无人机的 TCP 连接."""
+        device_id = params.get("device_id", "")
+        if not device_id:
+            return {"code": -1, "msg": "缺少必要参数: device_id", "data": {}}
+        result = await self._mavlink.disconnect_drone(device_id=device_id)
+        if result.get("success", False):
+            return {"code": 0, "msg": "TCP 连接已断开", "data": result}
+        return {"code": -1, "msg": result.get("error", "断开失败"), "data": result}
+
+    def list_connections(self) -> dict[str, Any]:
+        """列出所有 TCP 主动连接通道."""
+        connections = self._mavlink.list_tcp_connections()
+        return {
+            "code": 0, "msg": "success",
+            "data": {"total": len(connections), "connections": connections},
+        }
+
     async def scan_drones(self) -> dict[str, Any]:
         """扫描无人机."""
         devices = await self._drone_manager.scan_now()
