@@ -1,0 +1,291 @@
+tool_package_snumber: "geou-tsapp-0001"
+tools_sync_cfgs: {
+    "manageServer": {
+        "0.0.0": {
+            "tool_uniq_id": "2054128033208590337",
+            "tool_desc": "边缘服务器无人机管控：管理类脑盒子（BrainBox）集群，接收无人机状态上报，转发导航指令，实现云—边—端协同调度。",
+            "tool_cfg": [
+                {
+                    "FunDesc": "管理类脑盒子集群、接收无人机数据上报、转发导航与控制指令到类脑盒子。",
+                    "ReqParam": {
+                        "dtype": "uvaTrack",
+                        "version": "0.0.0",
+                        "subfuncs": [
+                            {
+                                "func_name": "add_brain_box",
+                                "func_desc": "注册类脑盒子实例到边缘服务器",
+                                "params": {
+                                    "box_id": "类脑盒子唯一标识符，如 'brain_box_001'",
+                                    "ip_address": "类脑盒子的 IP 地址，如 '192.168.1.50'",
+                                    "port": "类脑盒子服务端口，默认 9000"
+                                }
+                            },
+                            {
+                                "func_name": "remove_brain_box",
+                                "func_desc": "移除类脑盒子实例及其关联的设备",
+                                "params": {
+                                    "box_id": "需要移除的类脑盒子唯一标识符"
+                                }
+                            },
+                            {
+                                "func_name": "list_brain_boxes",
+                                "func_desc": "获取已注册的类脑盒子列表及状态",
+                                "params": {}
+                            },
+                            {
+                                "func_name": "get_brain_box_status",
+                                "func_desc": "查询类脑盒子详细状态（远程调用 brain_box 系统状态接口）",
+                                "params": {
+                                    "box_id": "类脑盒子唯一标识符"
+                                }
+                            },
+                            {
+                                "func_name": "heartbeat",
+                                "func_desc": "接收类脑盒子心跳上报，维持在线状态（支持自动注册）",
+                                "params": {
+                                    "box_id": "类脑盒子唯一标识符",
+                                    "drone_count": "管辖的无人机总数",
+                                    "online_count": "在线无人机数",
+                                    "ip_address": "可选，类脑盒子 IP（用于自动注册）",
+                                    "port": "可选，类脑盒子端口（用于自动注册）"
+                                }
+                            },
+                            {
+                                "func_name": "drone_report",
+                                "func_desc": "接收无人机状态上报（由类脑盒子转发）",
+                                "params": {
+                                    "box_id": "上报方类脑盒子标识符",
+                                    "devices": "无人机设备信息列表，每项包含 device_id, device_type, protocol, status, position 等"
+                                }
+                            },
+                            {
+                                "func_name": "trajectory_report",
+                                "func_desc": "接收导航轨迹上报（由类脑盒子转发）",
+                                "params": {
+                                    "box_id": "上报方类脑盒子标识符",
+                                    "trajectory": "轨迹数据字典，包含 trajectory_id, device_id, waypoints, algorithm_name 等"
+                                }
+                            },
+                            {
+                                "func_name": "scan_drones",
+                                "func_desc": "转发扫描指令到指定类脑盒子，触发无人机网络扫描",
+                                "params": {
+                                    "box_id": "目标类脑盒子标识符"
+                                }
+                            },
+                            {
+                                "func_name": "query_drones",
+                                "func_desc": "转发查询指令到指定类脑盒子，获取无人机详情",
+                                "params": {
+                                    "box_id": "目标类脑盒子标识符",
+                                    "device_id": "可选，指定查询的设备 ID",
+                                    "status": "可选，按状态过滤"
+                                }
+                            },
+                            {
+                                "func_name": "send_command",
+                                "func_desc": "转发控制指令到指定类脑盒子，操控目标无人机",
+                                "params": {
+                                    "box_id": "目标类脑盒子标识符",
+                                    "device_id": "目标无人机设备 ID",
+                                    "command": "指令内容字典，如 {'type': 'takeoff', 'altitude': 50.0}"
+                                }
+                            },
+                            {
+                                "func_name": "navigation_instruction",
+                                "func_desc": "下发导航指令，经由类脑盒子生成轨迹并发送到无人机",
+                                "params": {
+                                    "box_id": "目标类脑盒子标识符",
+                                    "instruction_id": "导航指令唯一 ID",
+                                    "device_id": "目标无人机设备 ID",
+                                    "target_position": "目标位置字典 {'latitude': ..., 'longitude': ..., 'altitude': ...}",
+                                    "algorithm": "导航算法名称，默认 'simple_linear'",
+                                    "parameters": "可选的算法参数字典"
+                                }
+                            },
+                            {
+                                "func_name": "execute_trajectory",
+                                "func_desc": "转发轨迹执行指令到类脑盒子",
+                                "params": {
+                                    "box_id": "目标类脑盒子标识符",
+                                    "trajectory_id": "轨迹 ID（从导航指令响应中获取）"
+                                }
+                            },
+                            {
+                                "func_name": "list_devices",
+                                "func_desc": "获取所有已知无人机设备列表（由类脑盒子上报，按 box_id 过滤）",
+                                "params": {
+                                    "box_id": "类脑盒子标识符，传 'all' 查询所有"
+                                }
+                            },
+                            {
+                                "func_name": "get_device_info",
+                                "func_desc": "获取指定无人机设备的详细信息",
+                                "params": {
+                                    "device_id": "无人机设备唯一标识符"
+                                }
+                            },
+                            {
+                                "func_name": "list_tasks",
+                                "func_desc": "查询导航任务列表",
+                                "params": {
+                                    "box_id": "类脑盒子标识符，传 'all' 查询所有"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    },
+    "brainBox": {
+        "0.0.0": {
+            "tool_uniq_id": "2054136993080795138",
+            "tool_desc": "类脑盒子（BrainBox）：边缘计算节点，负责无人机接入、协议转换、局部导航算法执行及状态上报。",
+            "tool_cfg": [
+                {
+                    "FunDesc": "类脑盒子核心功能：包含配置管理、无人机扫描与查询、控制指令转发、导航指令处理及系统状态查询。",
+                    "ReqParam": {
+                        "dtype": "brainBox",
+                        "version": "0.0.0",
+                        "subfuncs": [
+                            {
+                                "func_name": "get_config",
+                                "func_desc": "获取类脑盒子当前配置信息（含边缘服务器地址、MAVLink连接、日志及存储配置）",
+                                "params": {}
+                            },
+                            {
+                                "func_name": "update_config",
+                                "func_desc": "更新类脑盒子配置信息（支持部分更新）",
+                                "params": {
+                                    "box_id": "可选，类脑盒子唯一标识符",
+                                    "edge": "可选，边缘服务器配置对象 {base_url, heartbeat_interval, ...}",
+                                    "mavlink": "可选，MAVLink通信配置对象 {connection_string, scan_interval, ...}",
+                                    "logging": "可选，日志配置对象 {level, log_dir, ...}",
+                                    "storage": "可选，存储配置对象 {db_path, device_evict_timeout}"
+                                }
+                            },
+                            {
+                                "func_name": "scan_drones",
+                                "func_desc": "立即触发网络扫描，发现并注册在线无人机",
+                                "params": {}
+                            },
+                            {
+                                "func_name": "query_drones",
+                                "func_desc": "查询无人机详细信息",
+                                "params": {
+                                    "device_id": "可选，指定无人机 ID 进行精确查询"
+                                }
+                            },
+                            {
+                                "func_name": "drones_summary",
+                                "func_desc": "获取当前管辖的所有无人机汇总统计信息（总数、在线/离线数及列表）",
+                                "params": {}
+                            },
+                            {
+                                "func_name": "send_command",
+                                "func_desc": "向指定无人机发送控制指令（如起飞、降落、前往航点等）",
+                                "params": {
+                                    "device_id": "目标无人机设备 ID",
+                                    "command": "指令内容字典，如 {'type': 'takeoff', 'altitude': 50.0} 或 {'type': 'goto', 'latitude': 39.9, 'longitude': 116.4, 'altitude': 100.0}"
+                                }
+                            },
+                            {
+                                "func_name": "navigation_instruction",
+                                "func_desc": "接收导航指令，调用算法生成轨迹并上报至边缘服务器",
+                                "params": {
+                                    "instruction_id": "导航指令唯一 ID",
+                                    "device_id": "目标无人机设备 ID",
+                                    "target_position": "目标位置字典 {'latitude': ..., 'longitude': ..., 'altitude': ...}",
+                                    "algorithm": "可选，导航算法名称，默认 'simple_linear'",
+                                    "parameters": "可选，算法参数字典，如 {'step_count': 5, 'speed': 8.0}"
+                                }
+                            },
+                            {
+                                "func_name": "execute_trajectory",
+                                "func_desc": "执行已生成的导航轨迹，将航点序列发送至无人机",
+                                "params": {
+                                    "trajectory_id": "轨迹唯一 ID"
+                                }
+                            },
+                            {
+                                "func_name": "list_trajectories",
+                                "func_desc": "获取当前内存中所有待执行的活动轨迹列表",
+                                "params": {}
+                            },
+                            {
+                                "func_name": "list_algorithms",
+                                "func_desc": "获取系统支持的导航算法列表",
+                                "params": {}
+                            },
+                            {
+                                "func_name": "system_status",
+                                "func_desc": "获取类脑盒子系统运行状态、无人机汇总及可用算法/协议",
+                                "params": {}
+                            },
+                            {
+                                "func_name": "list_protocols",
+                                "func_desc": "获取已注册的通信协议列表",
+                                "params": {}
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    },
+    "videoProcess": {
+      "0.0.0": {
+          "tool_uniq_id": "2054137347977633793",
+          "tool_desc": "边缘服务器无人机管控：管理类脑盒子（BrainBox）集群，接收无人机状态上报，转发导航指令，实现云—边—端协同调度。",
+          "tool_cfg": [
+              {
+                  "FunDesc": "视频处理任务管理，支持启动、停止、查询任务及获取结果。",
+                  "ReqParam": {
+                      "dtype": "videoProcess",
+                      "version": "0.0.0",
+                      "subfuncs": [
+                          {
+                              "func_name": "start_task",
+                              "func_desc": "启动视频处理任务",
+                              "params": {
+                                  "pull_source": "输入源类型，如 'local' 或 'uva'",
+                                  "pull_url": "视频流地址",
+                                  "pull_type": "输入流协议类型",
+                                  "models_cfg": "模型配置列表",
+                                  "output_type": "输出类型：'stream', 'json', 'mysql'"
+                              }
+                          },
+                          {
+                              "func_name": "get_result",
+                              "func_desc": "获取任务结果",
+                              "params": {
+                                  "task_id": "任务唯一标识符"
+                              }
+                          },
+                          {
+                              "func_name": "list_tasks",
+                              "func_desc": "列出所有任务",
+                              "params": {}
+                          },
+                          {
+                              "func_name": "stop_task",
+                              "func_desc": "停止视频处理任务",
+                              "params": {
+                                  "task_id": "任务唯一标识符"
+                              }
+                          },
+                          {
+                              "func_name": "get_stream_url",
+                              "func_desc": "获取输出流地址",
+                              "params": {
+                                  "task_id": "任务唯一标识符"
+                              }
+                          }
+                      ]
+                  }
+              }
+          ]
+      }
+    }
+}

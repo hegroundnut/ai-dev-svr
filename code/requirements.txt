@@ -1,0 +1,10 @@
+Flask
+Flask-Cors
+ruamel.yaml
+requests
+colorlog
+pyyaml
+tqdm
+oss2
+minio
+opencv-python-headless
