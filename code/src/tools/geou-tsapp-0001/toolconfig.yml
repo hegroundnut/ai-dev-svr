@@ -286,57 +286,72 @@ tools_sync_cfgs: {
         }
     },
     "videoProcess": {
-      "0.0.0": {
-          "tool_uniq_id": "2054137347977633793",
-          "tool_desc": "视频处理任务管理：启动、停止、查询视频处理任务及获取结果。",
-          "tool_cfg": [
-              {
-                  "FunDesc": "视频处理任务管理，支持启动、停止、查询任务及获取结果。",
-                  "ReqParam": {
-                      "dtype": "videoProcess",
-                      "version": "0.0.0",
-                      "subfuncs": [
-                          {
-                              "func_name": "start_task",
-                              "func_desc": "启动视频处理任务",
-                              "params": {
-                                  "pull_source": "输入源类型，如 'local' 或 'uva'",
-                                  "pull_url": "视频流地址",
-                                  "pull_type": "输入流协议类型",
-                                  "models_cfg": "模型配置列表",
-                                  "output_type": "输出类型：'stream', 'json', 'mysql'"
-                              }
-                          },
-                          {
-                              "func_name": "get_result",
-                              "func_desc": "获取任务结果",
-                              "params": {
-                                  "task_id": "任务唯一标识符"
-                              }
-                          },
-                          {
-                              "func_name": "list_tasks",
-                              "func_desc": "列出所有任务",
-                              "params": {}
-                          },
-                          {
-                              "func_name": "stop_task",
-                              "func_desc": "停止视频处理任务",
-                              "params": {
-                                  "task_id": "任务唯一标识符"
-                              }
-                          },
-                          {
-                              "func_name": "get_stream_url",
-                              "func_desc": "获取输出流地址",
-                              "params": {
-                                  "task_id": "任务唯一标识符"
-                              }
-                          }
-                      ]
-                  }
-              }
-          ]
-      }
+        "0.0.0": {
+            "tool_uniq_id": "2054137347977633793",
+            "tool_desc": "视频处理服务：支持视频流拉取、AI 算法分析（YOLO 等）及结果推送。models_cfg 为空时进入无模型直通模式，仅完成推拉流转发。",
+            # loading_tools 配置（供 Process.py 动态加载本工具）：
+            # {
+            #   "dtype": "videoProcess",
+            #   "version": "0.0.0",
+            #   "dir_name": "videoProcess",
+            #   "file_name": "videoProcess",
+            #   "class_name": "CvideoProcess"
+            # }
+            "tool_cfg": [
+                {
+                    "FunDesc": "视频处理任务管理，支持启动、停止、查询任务及获取结果。",
+                    "ReqParam": {
+                        "dtype": "videoProcess",
+                        "version": "0.0.0",
+                        "subfuncs": [
+                            {
+                                "func_name": "start_task",
+                                "func_desc": "启动视频处理任务。models_cfg 为空时进入无模型直通模式（纯推拉流）",
+                                "params": {
+                                    "pull_source": "拉流源类型：'local'（本地/RTMP/RTSP）或 'uva'（无人机 API）",
+                                    "pull_url": "拉流地址（local 模式为流 URL；uva 模式为 API 查询地址）",
+                                    "pull_type": "流协议类型，如 'rtmp'、'rtsp'、'webrtc'",
+                                    "models_cfg": "模型配置列表（可选）。为空则进入无模型直通模式。示例：[{"model_folder": "/path/weights", "model_name": "yolov8n.pt", "type": "yolo"}]。支持多模型串联，按列表顺序依次处理每帧。",
+                                    "output_type": "输出类型：'stream'（推流）、'json'（结果查询）、'mysql'（入库）",
+                                    "buffer_size": "缓冲带大小（帧数，默认 30）。较小值降低延迟，较大值提升流畅度",
+                                    "stream_push_mode": "推流模式，目前支持 'ffmpeg'",
+                                    "stream_push_type": "推流协议类型，如 'rtmp'",
+                                    "stream_push_srs_addr": "SRS 服务器地址，如 'localhost'",
+                                    "stream_push_srs_port": "SRS 服务器端口，如 1935",
+                                    "stream_push_stream_key": "推流 stream key，如 'detected'",
+                                    "stream_push_url": "完整推流地址（填写后忽略上面三个 srs 参数），如 'rtmp://localhost:1935/live/detected'"
+                                }
+                            },
+                            {
+                                "func_name": "get_result",
+                                "func_desc": "获取任务状态及结果",
+                                "params": {
+                                    "task_id": "任务唯一标识符"
+                                }
+                            },
+                            {
+                                "func_name": "list_tasks",
+                                "func_desc": "列出所有任务（含运行中和已完成）",
+                                "params": {}
+                            },
+                            {
+                                "func_name": "stop_task",
+                                "func_desc": "停止并删除指定任务",
+                                "params": {
+                                    "task_id": "任务唯一标识符"
+                                }
+                            },
+                            {
+                                "func_name": "get_stream_url",
+                                "func_desc": "获取任务的输出流地址",
+                                "params": {
+                                    "task_id": "任务唯一标识符"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
     }
 }
