@@ -311,7 +311,7 @@ tools_sync_cfgs: {
                                     "pull_source": "拉流源类型：'local'（本地/RTMP/RTSP）或 'uva'（无人机 API）",
                                     "pull_url": "拉流地址（local 模式为流 URL；uva 模式为 API 查询地址）",
                                     "pull_type": "流协议类型，如 'rtmp'、'rtsp'、'webrtc'",
-                                    "models_cfg": "模型配置列表（可选）。为空则进入无模型直通模式。示例：[{"model_folder": "/path/weights", "model_name": "yolov8n.pt", "type": "yolo"}]。支持多模型串联，按列表顺序依次处理每帧。",
+                                    "models_cfg": "模型配置列表（可选）。为空则进入无模型直通模式。示例：[{'model_folder': '/path/weights', 'model_name': 'yolov8n.pt', 'type': 'yolo'}]。支持多模型串联，按列表顺序依次处理每帧。",
                                     "output_type": "输出类型：'stream'（推流）、'json'（结果查询）、'mysql'（入库）",
                                     "buffer_size": "缓冲带大小（帧数，默认 30）。较小值降低延迟，较大值提升流畅度",
                                     "stream_push_mode": "推流模式，目前支持 'ffmpeg'",
