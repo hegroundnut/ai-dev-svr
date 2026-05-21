@@ -14,7 +14,7 @@ import yaml
 class EdgeServerConfig:
     """边缘控制服务器配置."""
 
-    base_url: str = "http://127.0.0.1:15000"
+    base_url: str = ("http://47.97.154.110:15000")
     heartbeat_path: str = "/api/manageServer/CmanageServer/heartbeat"
     drone_report_path: str = "/api/manageServer/CmanageServer/drone_report"
     trajectory_report_path: str = "/api/manageServer/CmanageServer/trajectory_report"
@@ -33,6 +33,20 @@ class MAVLinkConnectionEntry:
 
 
 @dataclass
+class ReconnectConfig:
+    """TCP 连接自动重连配置.
+
+    仅对 TCP 主动连接通道生效，UDP 通道不适用。
+    """
+
+    enabled: bool = True
+    max_attempts: int = 5
+    base_delay: float = 2.0
+    max_delay: float = 60.0
+    idle_timeout: float = 10.0
+
+
+@dataclass
 class MAVLinkConfig:
     """MAVLink 通信配置（支持多连接）."""
 
@@ -43,6 +57,7 @@ class MAVLinkConfig:
     scan_interval: float = 3.0
     heartbeat_timeout: float = 10.0
     baud_rate: int = 57600
+    reconnect: ReconnectConfig = field(default_factory=ReconnectConfig)
 
     def get_connections(self) -> list[MAVLinkConnectionEntry]:
         """返回所有连接配置; 若无显式 connections 则用 connection_string 回退."""
@@ -91,7 +106,7 @@ def _apply_section(data: dict[str, Any], key: str, target: Any) -> None:
 class Settings:
     """全局配置（不含 server 段，server 由 main.py 独立管理）."""
 
-    box_id: str = "brain_box_001"
+    box_id: str = "brain_box_002"
     edge: EdgeServerConfig = field(default_factory=EdgeServerConfig)
     mavlink: MAVLinkConfig = field(default_factory=MAVLinkConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -124,6 +139,7 @@ class Settings:
             return
         mav_data = dict(data["mavlink"])
         conn_list_raw = mav_data.pop("connections", None)
+        reconnect_raw = mav_data.pop("reconnect", None)
         _apply_section({"mavlink": mav_data}, "mavlink", settings.mavlink)
         if conn_list_raw and isinstance(conn_list_raw, list):
             settings.mavlink.connections = [
@@ -134,6 +150,8 @@ class Settings:
                 )
                 for c in conn_list_raw
             ]
+        if reconnect_raw and isinstance(reconnect_raw, dict):
+            _apply_section({"reconnect": reconnect_raw}, "reconnect", settings.mavlink.reconnect)
 
     def apply_env_overrides(self) -> None:
         """环境变量覆盖配置 (优先级最高)."""
@@ -148,16 +166,24 @@ class Settings:
             "BRAIN_BOX_EDGE_HEARTBEAT_INTERVAL": ("edge", "heartbeat_interval"),
             "BRAIN_BOX_MAVLINK_CONNECTION": ("mavlink", "connection_string"),
             "BRAIN_BOX_MAVLINK_SYSTEM_ID": ("mavlink", "system_id"),
+            "BRAIN_BOX_MAVLINK_RECONNECT_ENABLED": ("mavlink", "reconnect", "enabled"),
+            "BRAIN_BOX_MAVLINK_RECONNECT_MAX_ATTEMPTS": ("mavlink", "reconnect", "max_attempts"),
+            "BRAIN_BOX_MAVLINK_RECONNECT_BASE_DELAY": ("mavlink", "reconnect", "base_delay"),
+            "BRAIN_BOX_MAVLINK_RECONNECT_MAX_DELAY": ("mavlink", "reconnect", "max_delay"),
+            "BRAIN_BOX_MAVLINK_RECONNECT_IDLE_TIMEOUT": ("mavlink", "reconnect", "idle_timeout"),
             "BRAIN_BOX_LOG_LEVEL": ("logging", "level"),
             "BRAIN_BOX_LOG_DIR": ("logging", "log_dir"),
             "BRAIN_BOX_DB_PATH": ("storage", "db_path"),
             "BRAIN_BOX_DEVICE_EVICT_TIMEOUT": ("storage", "device_evict_timeout"),
         }
-        for env_key, (section, attr) in env_map.items():
+        for env_key, target in env_map.items():
             val = os.environ.get(env_key)
             if val is None:
                 continue
-            obj = getattr(self, section)
+            *sections, attr = target
+            obj = self
+            for sec in sections:
+                obj = getattr(obj, sec)
             current = getattr(obj, attr)
             if isinstance(current, int):
                 setattr(obj, attr, int(val))
