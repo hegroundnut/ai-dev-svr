@@ -122,14 +122,18 @@ class _MAVLinkChannel:
     # ── 统一消息接收循环 ──────────────────────────────────────
 
     async def _recv_loop(self, devices: dict[str, DeviceInfo]) -> None:
-        """统一消息接收 — 不按类型过滤，收到什么就分发处理.
-
-        TCP 通道在连续无消息或 socket 异常时自动触发重连。
-        """
+        """统一消息接收 — TCP 通道在断线时自动重连."""
         _consecutive_idle = 0
         _idle_threshold = max(1, int(self._reconnect_cfg.idle_timeout))
 
         while self._running:
+            if self.connection is None:
+                if self._is_tcp and self._reconnect_cfg.enabled:
+                    await self._try_reconnect()
+                if self.connection is None:
+                    break
+                continue
+
             try:
                 msg = await asyncio.get_event_loop().run_in_executor(
                     None,
@@ -137,156 +141,121 @@ class _MAVLinkChannel:
                         blocking=True, timeout=1
                     ),
                 )
-                if msg is None:
-                    if self._is_tcp and self._reconnect_cfg.enabled:
-                        _consecutive_idle += 1
-                        if _consecutive_idle >= _idle_threshold:
-                            logger.warning(
-                                "TCP 通道 %s 连续 %.0fs 无消息，尝试重连",
-                                self.label,
-                                _consecutive_idle,
-                            )
-                            if not await self._try_reconnect():
-                                return  # 重连耗尽或通道已关闭
-                            _consecutive_idle = 0
-                    continue
-
-                _consecutive_idle = 0
-                msg_type = msg.get_type()
-                if msg_type == "BAD_DATA":
-                    continue
-
-                sys_id = msg.get_srcSystem()
-                if hasattr(self.connection, "last_address") and self.connection.last_address:
-                    self._addr_map[sys_id] = self.connection.last_address
-
-                if msg_type == "HEARTBEAT":
-                    _process_heartbeat(msg, devices, self.label)
-                elif msg_type == "GLOBAL_POSITION_INT":
-                    _process_position(msg, devices)
-                elif msg_type == "ATTITUDE":
-                    _process_attitude(msg, devices)
-                elif msg_type == "VFR_HUD":
-                    _process_vfr_hud(msg, devices)
-                elif msg_type == "BATTERY_STATUS":
-                    _process_battery(msg, devices)
-                elif msg_type == "SYS_STATUS":
-                    _process_sys_status(msg, devices)
-                elif msg_type == "RAW_IMU":
-                    _process_raw_imu(msg, devices)
-                elif msg_type == "SCALED_PRESSURE":
-                    _process_scaled_pressure(msg, devices)
-                elif msg_type == "GPS_RAW_INT":
-                    _process_gps_raw(msg, devices)
-                elif msg_type == "COMMAND_ACK":
-                    logger.debug(
-                        "收到指令确认: command=%s, result=%s",
-                        msg.command,
-                        msg.result,
-                    )
-
             except OSError:
-                logger.warning(
-                    "MAVLink 通道 '%s' socket 异常 (EOF/连接重置)", self.label,
-                )
                 if self._is_tcp and self._reconnect_cfg.enabled:
-                    if not await self._try_reconnect():
-                        return
+                    await self._try_reconnect()
                 else:
                     break
+                continue
             except Exception:
-                logger.exception("MAVLink 消息接收异常 (通道 %s)", self.label)
+                await asyncio.sleep(0.5)
+                continue
+
+            if msg is None:
+                if self._is_tcp and self._reconnect_cfg.enabled:
+                    _consecutive_idle += 1
+                    if _consecutive_idle >= _idle_threshold:
+                        await self._try_reconnect()
+                        _consecutive_idle = 0
+                continue
+
+            _consecutive_idle = 0
+            msg_type = msg.get_type()
+            if msg_type == "BAD_DATA":
+                continue
+
+            sys_id = msg.get_srcSystem()
+            if hasattr(self.connection, "last_address") and self.connection.last_address:
+                self._addr_map[sys_id] = self.connection.last_address
+
+            if msg_type == "HEARTBEAT":
+                _process_heartbeat(msg, devices, self.label)
+            elif msg_type == "GLOBAL_POSITION_INT":
+                _process_position(msg, devices)
+            elif msg_type == "ATTITUDE":
+                _process_attitude(msg, devices)
+            elif msg_type == "VFR_HUD":
+                _process_vfr_hud(msg, devices)
+            elif msg_type == "BATTERY_STATUS":
+                _process_battery(msg, devices)
+            elif msg_type == "SYS_STATUS":
+                _process_sys_status(msg, devices)
+            elif msg_type == "RAW_IMU":
+                _process_raw_imu(msg, devices)
+            elif msg_type == "SCALED_PRESSURE":
+                _process_scaled_pressure(msg, devices)
+            elif msg_type == "GPS_RAW_INT":
+                _process_gps_raw(msg, devices)
+            elif msg_type == "COMMAND_ACK":
+                logger.debug(
+                    "收到指令确认: command=%s, result=%s",
+                    msg.command,
+                    msg.result,
+                )
+
             await asyncio.sleep(0.01)
 
     # ── TCP 自动重连 ──────────────────────────────────────────
 
-    async def _try_reconnect(self) -> bool:
-        """尝试重连 TCP 通道. 返回 True 表示重连成功或应继续等待, False 表示放弃."""
-        if not self._running:
-            return False
-
+    async def _try_reconnect(self) -> None:
+        """TCP 断线重连：关闭旧连接 → 退避等待 → 建立新连接（内部循环至成功或放弃）."""
         max_attempts = self._reconnect_cfg.max_attempts
-        if max_attempts > 0 and self._reconnect_attempts >= max_attempts:
-            logger.error(
-                "TCP 通道 %s 已达最大重连次数 (%d/%d)，放弃重连",
-                self.label,
-                self._reconnect_attempts,
-                max_attempts,
-            )
-            self._running = False
-            return False
+        max_attempts_str = str(max_attempts) if max_attempts > 0 else "∞"
 
-        self._reconnect_attempts += 1
-        delay = min(
-            self._reconnect_cfg.base_delay * (2 ** (self._reconnect_attempts - 1)),
-            self._reconnect_cfg.max_delay,
-        )
-
-        logger.warning(
-            "TCP 通道 %s 将在 %.1fs 后重连 (第 %d 次)",
-            self.label,
-            delay,
-            self._reconnect_attempts,
-        )
-
-        # 标记通道下所有设备为离线
         self._mark_devices_offline()
-
-        # 关闭旧连接
         self._close_connection()
 
-        # 退避等待
-        await asyncio.sleep(delay)
+        while self._running:
+            self._reconnect_attempts += 1
 
-        if not self._running:
-            return False
+            if max_attempts > 0 and self._reconnect_attempts > max_attempts:
+                logger.error(
+                    "TCP 通道 %s 重连 %d 次均失败，放弃",
+                    self.label, max_attempts,
+                )
+                self._running = False
+                return
 
-        # 尝试建立新连接
-        try:
-            from pymavlink import mavutil  # noqa: PLC0415
-
-            self.connection = mavutil.mavlink_connection(
-                self.entry.connection_string,
-                source_system=self.system_id,
-                source_component=self.component_id,
-                baud=self.entry.baud_rate,
+            delay = min(
+                self._reconnect_cfg.base_delay * (2 ** (self._reconnect_attempts - 1)),
+                self._reconnect_cfg.max_delay,
             )
-            attempts = self._reconnect_attempts
-            self._reconnect_attempts = 0
+
             logger.info(
-                "TCP 通道 %s 重连成功 (第 %d 次尝试后)",
-                self.label,
-                attempts,
+                "TCP %s 重连 %d/%s，等待 %.0fs",
+                self.label, self._reconnect_attempts, max_attempts_str, delay,
             )
-            return True
-        except ImportError:
-            logger.error("pymavlink 未安装，无法重连 TCP 通道 %s", self.label)
-            self._running = False
-            return False
-        except Exception:
-            logger.exception(
-                "TCP 通道 %s 重连失败 (第 %d 次)",
-                self.label,
-                self._reconnect_attempts,
-            )
-            return True  # 继续循环，下次空闲检测时再次尝试
+            await asyncio.sleep(delay)
+
+            if not self._running:
+                return
+
+            try:
+                from pymavlink import mavutil  # noqa: PLC0415
+
+                self.connection = mavutil.mavlink_connection(
+                    self.entry.connection_string,
+                    source_system=self.system_id,
+                    source_component=self.component_id,
+                    baud=self.entry.baud_rate,
+                )
+                self._reconnect_attempts = 0
+                logger.info("TCP %s 重连成功", self.label)
+                return
+            except Exception:
+                pass  # 继续循环尝试
 
     def _mark_devices_offline(self) -> None:
-        """将当前通道下的所有设备标记为离线."""
         if not self._devices_ref:
             return
         for device in self._devices_ref.values():
             if device.metadata.get("channel") == self.label:
                 device.status = DeviceStatus.OFFLINE
-                logger.info("设备 %s 因通道 '%s' 断开标记为离线", device.device_id, self.label)
 
     def _close_connection(self) -> None:
-        """关闭底层连接（不取消任务）。"""
         if self.connection:
-            try:
+            with contextlib.suppress(Exception):
                 self.connection.close()
-            except Exception:
-                logger.debug("关闭连接时异常 (通道 %s)", self.label, exc_info=True)
             self.connection = None
 
     async def _simulated_loop(
