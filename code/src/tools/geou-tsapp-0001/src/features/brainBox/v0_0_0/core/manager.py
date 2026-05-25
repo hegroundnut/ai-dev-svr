@@ -74,31 +74,33 @@ class BrainBoxManager:
 
     async def _handle_ws_request(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Dispatch incoming WS request from manageServer to the appropriate method."""
-        _dispatch: dict[str, tuple[str, bool]] = {
-            "connect_drone": ("connect_drone", True),
-            "disconnect_drone": ("disconnect_drone", True),
-            "connections": ("list_connections", False),
-            "scan": ("scan_drones", True),
-            "query": ("query_drones", False),
-            "command": ("send_command", True),
-            "summary": ("drones_summary", False),
-            "instruction": ("navigation_instruction", True),
-            "execute": ("execute_trajectory", True),
-            "trajectories": ("list_trajectories", False),
-            "algorithms": ("list_algorithms", False),
-            "status": ("system_status", False),
-            "protocols": ("list_protocols", False),
+        # (method_name, is_async, needs_payload)
+        _dispatch: dict[str, tuple[str, bool, bool]] = {
+            "connect_drone": ("connect_drone", True, True),
+            "disconnect_drone": ("disconnect_drone", True, True),
+            "connections": ("list_connections", False, False),
+            "scan": ("scan_drones", True, False),
+            "query": ("query_drones", False, True),
+            "command": ("send_command", True, True),
+            "summary": ("drones_summary", False, False),
+            "instruction": ("navigation_instruction", True, True),
+            "execute": ("execute_trajectory", True, True),
+            "trajectories": ("list_trajectories", False, False),
+            "algorithms": ("list_algorithms", False, False),
+            "status": ("system_status", False, False),
+            "protocols": ("list_protocols", False, False),
         }
         entry = _dispatch.get(action)
         if entry is None:
             return {"code": -1, "msg": f"Unknown action: {action}", "data": {}}
 
-        method_name, is_async = entry
+        method_name, is_async, needs_payload = entry
         method = getattr(self, method_name)
+        args = (payload,) if needs_payload else ()
         if is_async:
-            return await method(payload)
+            return await method(*args)
         else:
-            return method(payload)
+            return method(*args)
 
     async def start(self) -> None:
         """启动所有子系统."""
