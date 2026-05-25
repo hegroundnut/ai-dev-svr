@@ -96,7 +96,7 @@ POST /api/manageServer/CmanageServer/{subfunc}
 | subfunc | 说明 | 参数示例 |
 |---------|------|----------|
 | `list_devices` | 获取所有已知无人机设备列表 | `{"box_id": "all"}` |
-| `get_device_info` | 获取设备详细信息 | `{"device_id": "drone_sim_0"}` |
+| `get_device_info` | 获取设备详细信息 | `{"box_id": "brain_box_001", "device_id": "drone_sim_0"}` |
 | `list_tasks` | 查询导航任务列表 | `{"box_id": "all"}` |
 
 ### 响应格式

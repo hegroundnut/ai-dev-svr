@@ -29,6 +29,7 @@ class BrainBoxNode:
     last_heartbeat: float = field(default_factory=time.time)
     drone_count: int = 0
     online_drone_count: int = 0
+    ws_connected: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -45,5 +46,6 @@ class BrainBoxNode:
             "last_heartbeat": self.last_heartbeat,
             "drone_count": self.drone_count,
             "online_drone_count": self.online_drone_count,
+            "ws_connected": self.ws_connected,
             "metadata": dict(self.metadata),
         }

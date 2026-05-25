@@ -1,4 +1,4 @@
-"""边缘服务上报器 — 周期性心跳和无人机状态上报."""
+"""边缘服务上报器 — 通过 WebSocket 周期性心跳和无人机状态上报."""
 
 from __future__ import annotations
 
@@ -6,77 +6,19 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import Any
-
-import httpx
-from config.settings import EdgeServerConfig
+from typing import Any, TYPE_CHECKING
 
 from core.drone_manager import DroneManager
+
+if TYPE_CHECKING:
+    from core.ws_client import EdgeWSClient
 
 logger = logging.getLogger("brainBox.core.edge_reporter")
 
 
-class EdgeClient:
-    """
-    边缘控制服务客户端.
-
-    所有与边缘控制服务的通信都通过 POST 请求，
-    URL 路径完全可配置。
-    """
-
-    def __init__(self, config: EdgeServerConfig) -> None:
-        self._config = config
-        self._client: httpx.AsyncClient | None = None
-
-    async def start(self) -> None:
-        """初始化 HTTP 客户端."""
-        self._client = httpx.AsyncClient(
-            base_url=self._config.base_url,
-            timeout=self._config.timeout,
-        )
-        logger.info("边缘服务客户端已启动: %s", self._config.base_url)
-
-    async def stop(self) -> None:
-        """关闭 HTTP 客户端."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
-        logger.info("边缘服务客户端已停止")
-
-    async def send_heartbeat(self, data: dict[str, Any]) -> dict[str, Any]:
-        """发送心跳到边缘服务."""
-        return await self._post(self._config.heartbeat_path, data)
-
-    async def report_drone_status(self, data: dict[str, Any]) -> dict[str, Any]:
-        """上报无人机状态到边缘服务."""
-        return await self._post(self._config.drone_report_path, data)
-
-    async def report_trajectory(self, data: dict[str, Any]) -> dict[str, Any]:
-        """上报导航轨迹到边缘服务."""
-        return await self._post(self._config.trajectory_report_path, data)
-
-    async def _post(self, path: str, data: dict[str, Any]) -> dict[str, Any]:
-        """统一 POST 请求."""
-        if not self._client:
-            logger.warning("边缘服务客户端未初始化")
-            return {"success": False, "error": "客户端未初始化"}
-        try:
-            response = await self._client.post(path, json=data)
-            response.raise_for_status()
-            result: dict[str, Any] = response.json()
-            logger.debug("POST %s 成功: %s", path, response.status_code)
-            return result
-        except httpx.HTTPStatusError as e:
-            logger.error("POST %s 失败: %s", path, e.response.status_code)
-            return {"success": False, "error": str(e), "status_code": e.response.status_code}
-        except httpx.RequestError as e:
-            logger.error("POST %s 请求异常: %s", path, e)
-            return {"success": False, "error": str(e)}
-
-
 class EdgeReporter:
     """
-    边缘服务上报器.
+    边缘服务上报器 — 通过 WebSocket 长连接上报。
 
     负责：
     1. 周期性发送心跳到边缘控制服务
@@ -86,13 +28,13 @@ class EdgeReporter:
 
     def __init__(
         self,
-        edge_client: EdgeClient,
+        ws_client: "EdgeWSClient",
         drone_manager: DroneManager,
         heartbeat_interval: float = 5.0,
         report_interval: float = 2.0,
         box_id: str = "brain_box_001",
     ) -> None:
-        self._edge_client = edge_client
+        self._ws_client = ws_client
         self._drone_manager = drone_manager
         self._heartbeat_interval = heartbeat_interval
         self._report_interval = report_interval
@@ -129,9 +71,9 @@ class EdgeReporter:
             "timestamp": time.time(),
             "trajectory": trajectory_data,
         }
-        result = await self._edge_client.report_trajectory(payload)
-        logger.info("轨迹已上报到边缘服务: %s", result)
-        return result
+        await self._ws_client.send_event("trajectory_report", payload)
+        logger.info("轨迹已上报到边缘服务 (via WS)")
+        return {"success": True}
 
     async def _heartbeat_loop(self) -> None:
         """周期性心跳."""
@@ -144,7 +86,6 @@ class EdgeReporter:
                     "status": "running",
                     "drone_count": summary["total"],
                     "online_count": summary["online"],
-                    # 携带在线设备的简要信息（device_id + status + flight_mode + arm_state）
                     "online_devices": [
                         {
                             "device_id": d["device_id"],
@@ -156,7 +97,7 @@ class EdgeReporter:
                         if d["status"] == "online"
                     ],
                 }
-                await self._edge_client.send_heartbeat(payload)
+                await self._ws_client.send_event("heartbeat", payload)
                 logger.debug("心跳已发送")
             except Exception:
                 logger.exception("心跳发送失败")
@@ -171,13 +112,10 @@ class EdgeReporter:
                     payload = {
                         "box_id": self._box_id,
                         "timestamp": time.time(),
-                        # devices 列表包含完整 DeviceInfo.to_dict()，
-                        # metadata 字段中携带 attitude/velocity/battery/
-                        # sys_status/imu/barometer/gps/flight_mode/arm_state
                         "devices": summary["devices"],
                     }
-                    await self._edge_client.report_drone_status(payload)
-                    logger.debug("无人机状态已上报: %d 台", summary["total"])
+                    await self._ws_client.send_event("drone_report", payload)
+                    logger.debug("无人机状态已上报 (via WS): %d 台", summary["total"])
             except Exception:
                 logger.exception("状态上报失败")
             await asyncio.sleep(self._report_interval)
@@ -191,7 +129,7 @@ class EdgeReporter:
                 "event": "status_change",
                 "device": device.to_dict(),
             }
-            await self._edge_client.report_drone_status(payload)
-            logger.info("设备状态变化已即时上报: %s", device.device_id)
+            await self._ws_client.send_event("drone_report", payload)
+            logger.info("设备状态变化已即时上报 (via WS): %s", device.device_id)
         except Exception:
             logger.exception("状态变化上报失败")

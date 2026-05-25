@@ -168,6 +168,7 @@ list_devices:
 
 get_device_info:
 {
+    "box_id": "brain_box_001",
     "device_id": "drone_sim_0"
 }
 
@@ -191,6 +192,7 @@ if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
 
 from core.manager import EdgeManager
+from core.ws_server import BrainBoxWSManager
 from config.settings import settings
 from utils.logger import setup_logging
 
@@ -225,10 +227,26 @@ class CmanageServer:
         if logs_dir:
             settings.logs_dir = logs_dir
 
+        # Start WebSocket server for brainBox long connections
+        ws_cfg = node_cfg.get("ws_config", {})
+        ws_host = ws_cfg.get("host", settings.ws_host)
+        ws_port = ws_cfg.get("port", settings.ws_port)
+
+        self._ws_manager = BrainBoxWSManager(
+            host=ws_host,
+            port=ws_port,
+            on_event=self._on_ws_event,
+            on_box_offline=self._on_ws_box_offline,
+            request_timeout=settings.request_timeout,
+        )
+        self._ws_manager.start()
+        logger.info("WebSocket server started on %s:%d", ws_host, ws_port)
+
         self._manager = EdgeManager(
             heartbeat_interval=settings.heartbeat_check_interval_s,
             box_timeout=settings.box_timeout_s,
             on_box_offline=self._on_box_offline_callback,
+            ws_manager=self._ws_manager,
         )
 
     # ------------------------------------------------------------------
@@ -239,6 +257,15 @@ class CmanageServer:
         logger.warning(
             "BrainBox offline callback: box_id=%s", box.box_id,
         )
+
+    def _on_ws_event(self, action, payload):
+        """Bridge WS events to EdgeManager."""
+        self._manager.on_ws_event(action, payload)
+
+    def _on_ws_box_offline(self, box_id):
+        """Called when a brainBox WS connection drops."""
+        logger.warning("BrainBox WS disconnected: box_id=%s", box_id)
+        self._manager.mark_brain_box_offline(box_id, reason="ws_disconnected")
 
     # ------------------------------------------------------------------
     #  辅助
@@ -414,13 +441,10 @@ class CmanageServer:
 
     def get_device_info(self, params):
         """获取设备详细信息"""
-        device_id = params["device_id"]
-        self.progress_callback(10, f"查询设备详情: {device_id}")
-        info = self._manager.get_device_info(device_id)
-        if info is None:
-            result = {"code": -1, "msg": f"设备 {device_id} 不存在", "data": {}}
-        else:
-            result = {"code": 0, "msg": "success", "data": info}
+        box_id = params.get("box_id", "")
+        device_id = params.get("device_id", "")
+        self.progress_callback(10, f"查询设备详情: box={box_id}, device={device_id}")
+        result = self._manager.get_device_info(box_id, device_id)
         return self._handle_result("get_device_info", result)
 
     def list_tasks(self, params):

@@ -14,7 +14,8 @@ import yaml
 class EdgeServerConfig:
     """边缘控制服务器配置."""
 
-    base_url: str = ("http://47.97.154.110:15000")
+    base_url: str = ("http://127.0.0.1:15000")
+    ws_url: str = "ws://127.0.0.1:15002"
     heartbeat_path: str = "/api/manageServer/CmanageServer/heartbeat"
     drone_report_path: str = "/api/manageServer/CmanageServer/drone_report"
     trajectory_report_path: str = "/api/manageServer/CmanageServer/trajectory_report"
@@ -160,6 +161,7 @@ class Settings:
             self.box_id = box_id_env
         env_map = {
             "BRAIN_BOX_EDGE_URL": ("edge", "base_url"),
+            "BRAIN_BOX_EDGE_WS_URL": ("edge", "ws_url"),
             "BRAIN_BOX_EDGE_HEARTBEAT_PATH": ("edge", "heartbeat_path"),
             "BRAIN_BOX_EDGE_DRONE_REPORT_PATH": ("edge", "drone_report_path"),
             "BRAIN_BOX_EDGE_TRAJECTORY_REPORT_PATH": ("edge", "trajectory_report_path"),

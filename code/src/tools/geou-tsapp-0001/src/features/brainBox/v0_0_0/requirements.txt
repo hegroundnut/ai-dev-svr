@@ -2,3 +2,4 @@ uvicorn
 fastapi
 pyyaml
 httpx
+websockets

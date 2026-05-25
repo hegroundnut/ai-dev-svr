@@ -37,6 +37,9 @@ class Settings:
         self.box_timeout_s = 30.0
         self.request_timeout = 10.0
 
+        self.ws_host = "0.0.0.0"
+        self.ws_port = 15002
+
         self.log_level = "INFO"
         self.log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 

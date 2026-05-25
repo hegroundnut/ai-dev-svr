@@ -11,10 +11,11 @@ from models.algorithm import NavigationInstruction
 from storage.database import Database
 
 from core.drone_manager import DroneManager
-from core.edge_reporter import EdgeClient, EdgeReporter
+from core.edge_reporter import EdgeReporter
 from core.mavlink_comm import MAVLinkProtocol
 from core.navigation_service import AlgorithmRegistry, NavigationService, SimpleNavigationAlgorithm
 from core.protocol_registry import ProtocolRegistry
+from core.ws_client import EdgeWSClient
 
 logger = logging.getLogger("brainBox.core.manager")
 
@@ -47,9 +48,13 @@ class BrainBoxManager:
             evict_timeout=self._settings.storage.device_evict_timeout,
         )
 
-        self._edge_client = EdgeClient(self._settings.edge)
+        self._ws_client = EdgeWSClient(
+            ws_url=self._settings.edge.ws_url,
+            box_id=self._settings.box_id,
+            on_request=self._handle_ws_request,
+        )
         self._edge_reporter = EdgeReporter(
-            edge_client=self._edge_client,
+            ws_client=self._ws_client,
             drone_manager=self._drone_manager,
             heartbeat_interval=self._settings.edge.heartbeat_interval,
             report_interval=self._settings.edge.report_interval,
@@ -65,11 +70,41 @@ class BrainBoxManager:
 
         self._started = False
 
+    # ── WS request dispatch ──
+
+    async def _handle_ws_request(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch incoming WS request from manageServer to the appropriate method."""
+        _dispatch: dict[str, tuple[str, bool]] = {
+            "connect_drone": ("connect_drone", True),
+            "disconnect_drone": ("disconnect_drone", True),
+            "connections": ("list_connections", False),
+            "scan": ("scan_drones", True),
+            "query": ("query_drones", False),
+            "command": ("send_command", True),
+            "summary": ("drones_summary", False),
+            "instruction": ("navigation_instruction", True),
+            "execute": ("execute_trajectory", True),
+            "trajectories": ("list_trajectories", False),
+            "algorithms": ("list_algorithms", False),
+            "status": ("system_status", False),
+            "protocols": ("list_protocols", False),
+        }
+        entry = _dispatch.get(action)
+        if entry is None:
+            return {"code": -1, "msg": f"Unknown action: {action}", "data": {}}
+
+        method_name, is_async = entry
+        method = getattr(self, method_name)
+        if is_async:
+            return await method(payload)
+        else:
+            return method(payload)
+
     async def start(self) -> None:
         """启动所有子系统."""
         await self._protocol_registry.connect_all()
         await self._drone_manager.start()
-        await self._edge_client.start()
+        await self._ws_client.start()
         await self._edge_reporter.start()
         self._started = True
         logger.info("BrainBoxManager 所有服务已启动")
@@ -77,7 +112,7 @@ class BrainBoxManager:
     async def stop(self) -> None:
         """停止所有子系统."""
         await self._edge_reporter.stop()
-        await self._edge_client.stop()
+        await self._ws_client.stop()
         await self._drone_manager.stop()
         await self._protocol_registry.disconnect_all()
         self._database.close()

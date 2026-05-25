@@ -21,6 +21,10 @@ mock_node_cfg = {
     "auto_register_config": {
         "enabled": True,
         "timeout_s": 60.0
+    },
+    "ws_config": {
+        "host": "0.0.0.0",
+        "port": 15002
     }
 }
 
