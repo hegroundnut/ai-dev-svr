@@ -6,10 +6,9 @@
 import time
 import threading
 import logging
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .manager import EdgeManager
+from models import BrainBoxStatus
+from .registry import BrainBoxRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +18,18 @@ class HeartbeatMonitor:
     心跳监控器
 
     参数:
-        manager: EdgeManager 实例
+        registry: BrainBoxRegistry 实例
         check_interval_s: 检查间隔（秒），默认 10s
         box_timeout_s: 类脑盒子心跳超时（秒），默认 30s
     """
 
     def __init__(
         self,
-        manager: "EdgeManager",
+        registry: BrainBoxRegistry,
         check_interval_s: float = 10.0,
         box_timeout_s: float = 30.0,
     ):
-        self._manager = manager
+        self._registry = registry
         self._check_interval = check_interval_s
         self._box_timeout = box_timeout_s
         self._thread: threading.Thread | None = None
@@ -70,10 +69,8 @@ class HeartbeatMonitor:
             self._stop_event.wait(self._check_interval)
 
     def _check_brain_boxes(self) -> None:
-        from models import BrainBoxStatus
-
         now = time.time()
-        for box in self._manager.get_all_brain_boxes():
+        for box in self._registry.get_all_boxes():
             if box.status == BrainBoxStatus.OFFLINE:
                 continue
             elapsed = now - box.last_heartbeat
@@ -84,6 +81,6 @@ class HeartbeatMonitor:
                     elapsed,
                     self._box_timeout,
                 )
-                self._manager.mark_brain_box_offline(
+                self._registry.mark_box_offline(
                     box.box_id, reason="heartbeat_timeout"
                 )

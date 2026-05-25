@@ -11,11 +11,12 @@ from models.algorithm import NavigationInstruction
 from storage.database import Database
 
 from core.drone_manager import DroneManager
-from core.edge_reporter import EdgeReporter
-from core.mavlink_comm import MAVLinkProtocol
-from core.navigation_service import AlgorithmRegistry, NavigationService, SimpleNavigationAlgorithm
-from core.protocol_registry import ProtocolRegistry
-from core.ws_client import EdgeWSClient
+from core.edge.reporter import EdgeReporter
+from core.mavlink.connection import MAVLinkProtocol
+from core.navigation.registry import AlgorithmRegistry, SimpleNavigationAlgorithm
+from core.navigation.service import NavigationService
+from core.mavlink.protocol import ProtocolRegistry
+from core.edge.client import EdgeWSClient
 
 logger = logging.getLogger("brainBox.core.manager")
 

@@ -7,14 +7,13 @@ import logging
 from typing import Dict, List, Optional, Any, Callable
 from models import (
     BrainBoxNode,
-    DroneDevice,
     NavigationTask,
     BrainBoxStatus,
-    DeviceStatus,
     NavigationStatus,
 )
 from config.settings import settings
 from .heartbeat import HeartbeatMonitor
+from .registry import BrainBoxRegistry
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -56,15 +55,14 @@ class EdgeManager:
 
         self._lock_internal = threading.RLock()
 
-        self._brain_boxes: Dict[str, BrainBoxNode] = {}
-        self._devices: Dict[str, DroneDevice] = {}
+        self._registry = BrainBoxRegistry()
         self._tasks: Dict[str, NavigationTask] = {}
 
         self._ws_manager = ws_manager
         self._request_timeout = settings.request_timeout
 
         self._heartbeat = HeartbeatMonitor(
-            self,
+            self._registry,
             check_interval_s=heartbeat_interval,
             box_timeout_s=box_timeout,
         )
@@ -85,52 +83,15 @@ class EdgeManager:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """注册类脑盒子（WS 连接后通过 add_brain_box 手动注册或自动注册）"""
-        with self._lock_internal:
-            if box_id in self._brain_boxes:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 已存在", "data": {}}
-
-            box = BrainBoxNode(
-                box_id=box_id,
-                metadata=metadata or {},
-            )
-            self._brain_boxes[box_id] = box
-            logger.info("BrainBox added: %s", box_id)
-
-            return {"code": 0, "msg": "success", "data": box.to_dict()}
+        return self._registry.add_box(box_id, metadata)
 
     def remove_brain_box(self, box_id: str) -> Dict[str, Any]:
         """移除类脑盒子并清理其关联的设备"""
-        with self._lock_internal:
-            if box_id not in self._brain_boxes:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
-
-            box = self._brain_boxes.pop(box_id)
-
-            removed_devices = [
-                did for did, d in self._devices.items() if d.box_id == box_id
-            ]
-            for did in removed_devices:
-                self._devices.pop(did)
-
-            logger.info(
-                "BrainBox removed: %s (cleaned %d devices)",
-                box_id,
-                len(removed_devices),
-            )
-            return {"code": 0, "msg": "success", "data": box.to_dict()}
+        return self._registry.remove_box(box_id)
 
     def list_brain_boxes(self) -> Dict[str, Any]:
         """获取所有类脑盒子列表"""
-        with self._lock_internal:
-            boxes = list(self._brain_boxes.values())
-            return {
-                "code": 0,
-                "msg": "success",
-                "data": {
-                    "total": len(boxes),
-                    "brain_boxes": [b.to_dict() for b in boxes],
-                },
-            }
+        return self._registry.list_boxes()
 
     # ==================================================================
     #  心跳接收（brain_box → edge_server）
@@ -139,22 +100,11 @@ class EdgeManager:
     def receive_heartbeat(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """接收类脑盒子心跳（通过 WS event 自动上报，HTTP 接口作为备用）。"""
         box_id = params.get("box_id", "")
-        with self._lock_internal:
-            if box_id in self._brain_boxes:
-                box = self._brain_boxes[box_id]
-                box.last_heartbeat = time.time()
-                box.drone_count = params.get("drone_count", box.drone_count)
-                box.online_drone_count = params.get("online_count", box.online_drone_count)
-                if box.status == BrainBoxStatus.OFFLINE:
-                    box.status = BrainBoxStatus.ONLINE
-                    logger.info("BrainBox %s back online", box_id)
-                return {"code": 0, "msg": "success", "data": box.to_dict()}
-
-            return {
-                "code": -1,
-                "msg": f"类脑盒子 {box_id} 未注册，请先通过 WS 连接或手动注册",
-                "data": {},
-            }
+        return self._registry.update_heartbeat(
+            box_id,
+            drone_count=params.get("drone_count", 0),
+            online_count=params.get("online_count", 0),
+        )
 
     # ==================================================================
     #  无人机状态上报（brain_box → edge_server）
@@ -167,53 +117,26 @@ class EdgeManager:
         brain_box 定期/即时上报其管辖的无人机信息。
         """
         box_id = params.get("box_id", "")
-        with self._lock_internal:
-            if box_id not in self._brain_boxes:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 未注册", "data": {}}
+        if not self._registry.box_exists(box_id):
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 未注册", "data": {}}
 
-            devices_data = params.get("devices", [])
-            event = params.get("event", "")
+        devices_data = params.get("devices", [])
+        event = params.get("event", "")
 
-            if event == "status_change":
-                device_data = params.get("device", {})
-                if device_data:
-                    self._upsert_device(box_id, device_data)
-                return {"code": 0, "msg": "status_change received", "data": {}}
+        if event == "status_change":
+            device_data = params.get("device", {})
+            if device_data:
+                self._registry.upsert_device(box_id, device_data)
+            return {"code": 0, "msg": "status_change received", "data": {}}
 
-            for dev in devices_data:
-                self._upsert_device(box_id, dev)
+        for dev in devices_data:
+            self._registry.upsert_device(box_id, dev)
 
-            return {
-                "code": 0,
-                "msg": "success",
-                "data": {"updated_count": len(devices_data)},
-            }
-
-    def _upsert_device(self, box_id: str, device_data: Dict[str, Any]) -> None:
-        """插入或更新设备记录"""
-        device_id = device_data.get("device_id", "")
-        if not device_id:
-            return
-
-        if device_id in self._devices:
-            dev = self._devices[device_id]
-            dev.status = DeviceStatus(device_data.get("status", dev.status.value))
-            dev.last_heartbeat = device_data.get("last_heartbeat", time.time())
-            dev.position = device_data.get("position", dev.position)
-            dev.metadata = device_data.get("metadata", dev.metadata)
-        else:
-            dev = DroneDevice(
-                device_id=device_id,
-                box_id=box_id,
-                device_type=device_data.get("device_type", "quadcopter"),
-                protocol=device_data.get("protocol", "mavlink"),
-                status=DeviceStatus(device_data.get("status", "online")),
-                last_heartbeat=device_data.get("last_heartbeat", time.time()),
-                position=device_data.get("position", {}),
-                metadata=device_data.get("metadata", {}),
-            )
-            self._devices[device_id] = dev
-            logger.info("Drone registered: %s (box=%s)", device_id, box_id)
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {"updated_count": len(devices_data)},
+        }
 
     # ==================================================================
     #  轨迹上报（brain_box → edge_server）
@@ -225,7 +148,7 @@ class EdgeManager:
         trajectory = params.get("trajectory", {})
 
         with self._lock_internal:
-            if box_id not in self._brain_boxes:
+            if not self._registry.box_exists(box_id):
                 return {"code": -1, "msg": f"类脑盒子 {box_id} 未注册", "data": {}}
 
             trajectory_id = trajectory.get("trajectory_id", "")
@@ -263,31 +186,11 @@ class EdgeManager:
 
     def list_devices(self, box_id: str = "all") -> Dict[str, Any]:
         """获取无人机设备列表"""
-        with self._lock_internal:
-            if box_id != "all" and box_id not in self._brain_boxes:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
-            devices = list(self._devices.values())
-            if box_id != "all":
-                devices = [d for d in devices if d.box_id == box_id]
-
-            return {
-                "code": 0,
-                "msg": "success",
-                "data": {
-                    "total": len(devices),
-                    "devices": [d.to_dict() for d in devices],
-                },
-            }
+        return self._registry.list_devices(box_id=box_id)
 
     def get_device_info(self, box_id: str, device_id: str) -> Dict[str, Any]:
         """获取设备详情"""
-        with self._lock_internal:
-            if box_id not in self._brain_boxes:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
-            dev = self._devices.get(device_id)
-            if not dev or dev.box_id != box_id:
-                return {"code": -1, "msg": f"设备 {device_id} 不存在", "data": {}}
-            return {"code": 0, "msg": "success", "data": dev.to_dict()}
+        return self._registry.get_device(box_id, device_id)
 
     # ==================================================================
     #  指令发送（WebSocket）
@@ -295,12 +198,11 @@ class EdgeManager:
 
     def _send_command_to_box(self, box_id: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """通过 WebSocket 向 brainBox 发送指令并等待响应。"""
-        with self._lock_internal:
-            box = self._brain_boxes.get(box_id)
-            if not box:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
-            if box.status == BrainBoxStatus.OFFLINE:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 离线", "data": {}}
+        box = self._registry.get_box(box_id)
+        if not box:
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
+        if box.status == BrainBoxStatus.OFFLINE:
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 离线", "data": {}}
 
         if not self._ws_manager or not self._ws_manager.is_connected(box_id):
             return {"code": -1, "msg": f"类脑盒子 {box_id} WebSocket 未连接", "data": {}}
@@ -319,16 +221,12 @@ class EdgeManager:
         """Handle incoming WS event from a brainBox (called from WS event loop thread)."""
         if action == "heartbeat":
             box_id = payload.get("box_id", "")
-            with self._lock_internal:
-                if box_id and box_id not in self._brain_boxes:
-                    box = BrainBoxNode(
-                        box_id=box_id,
-                        ws_connected=True,
-                    )
-                    self._brain_boxes[box_id] = box
-                    logger.info("BrainBox auto-registered via WS: %s", box_id)
-                elif box_id in self._brain_boxes:
-                    self._brain_boxes[box_id].ws_connected = True
+            if box_id and not self._registry.box_exists(box_id):
+                self._registry.add_box(box_id, {})
+                self._registry.set_box_ws_connected(box_id, True)
+                logger.info("BrainBox auto-registered via WS: %s", box_id)
+            elif box_id:
+                self._registry.set_box_ws_connected(box_id, True)
             self.receive_heartbeat(payload)
         elif action == "drone_report":
             self.receive_drone_report(payload)
@@ -389,13 +287,13 @@ class EdgeManager:
         algorithm = params.get("algorithm", "simple_linear")
         parameters = params.get("parameters", {})
 
-        with self._lock_internal:
-            box = self._brain_boxes.get(box_id)
-            if not box:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
-            if box.status == BrainBoxStatus.OFFLINE:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 离线", "data": {}}
+        box = self._registry.get_box(box_id)
+        if not box:
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
+        if box.status == BrainBoxStatus.OFFLINE:
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 离线", "data": {}}
 
+        with self._lock_internal:
             task = NavigationTask(
                 task_id=NavigationTask.generate_task_id(),
                 instruction_id=instruction_id,
@@ -460,7 +358,7 @@ class EdgeManager:
     def list_tasks(self, box_id: str = "all") -> Dict[str, Any]:
         """查询导航任务列表"""
         with self._lock_internal:
-            if box_id != "all" and box_id not in self._brain_boxes:
+            if box_id != "all" and not self._registry.box_exists(box_id):
                 return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
             tasks = list(self._tasks.values())
             if box_id != "all":
@@ -487,23 +385,12 @@ class EdgeManager:
     # ==================================================================
 
     def mark_brain_box_offline(self, box_id: str, reason: str = "unknown") -> None:
-        with self._lock_internal:
-            box = self._brain_boxes.get(box_id)
-            if box:
-                box.status = BrainBoxStatus.OFFLINE
-                box.ws_connected = False
-                logger.warning("BrainBox marked offline: %s (reason=%s)", box_id, reason)
-
-                for dev in self._devices.values():
-                    if dev.box_id == box_id and dev.status != DeviceStatus.OFFLINE:
-                        dev.status = DeviceStatus.OFFLINE
-
-                if self._on_box_offline:
-                    self._on_box_offline(box)
+        box = self._registry.mark_box_offline(box_id, reason)
+        if box and self._on_box_offline:
+            self._on_box_offline(box)
 
     def get_all_brain_boxes(self) -> List[BrainBoxNode]:
-        with self._lock_internal:
-            return list(self._brain_boxes.values())
+        return self._registry.get_all_boxes()
 
     def get_brain_box_status(self, box_id: str) -> Dict[str, Any]:
         """通过 WS 查询类脑盒子详细状态"""

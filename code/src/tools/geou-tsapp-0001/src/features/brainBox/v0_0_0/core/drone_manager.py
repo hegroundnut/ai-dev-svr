@@ -11,7 +11,7 @@ from typing import Any
 from models.device import DeviceInfo, DeviceStatus
 from storage.database import Database
 
-from core.protocol_registry import ProtocolRegistry
+from core.mavlink.protocol import ProtocolRegistry
 
 logger = logging.getLogger("brainBox.core.drone_manager")
 

@@ -11,7 +11,7 @@ from typing import Any, TYPE_CHECKING
 from core.drone_manager import DroneManager
 
 if TYPE_CHECKING:
-    from core.ws_client import EdgeWSClient
+    from core.edge.client import EdgeWSClient
 
 logger = logging.getLogger("brainBox.core.edge_reporter")
 
