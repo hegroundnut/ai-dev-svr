@@ -6,18 +6,17 @@ tools_sync_cfgs: {
             "tool_desc": "边缘服务器无人机管控：管理类脑盒子（BrainBox）集群，接收无人机状态上报，转发导航指令，实现云—边—端协同调度。",
             "tool_cfg": [
                 {
-                    "FunDesc": "管理类脑盒子集群、接收无人机数据上报、转发导航与控制指令到类脑盒子。",
+                    "FunDesc": "通过 WebSocket 长连接管理类脑盒子集群、接收无人机数据上报、转发导航与控制指令到类脑盒子。",
                     "ReqParam": {
                         "dtype": "uvaTrack",
                         "version": "0.0.0",
                         "subfuncs": [
                             {
                                 "func_name": "add_brain_box",
-                                "func_desc": "注册类脑盒子实例到边缘服务器",
+                                "func_desc": "注册类脑盒子实例到边缘服务器（也可由 WS 首次心跳自动注册）",
                                 "params": {
                                     "box_id": "类脑盒子唯一标识符，如 'brain_box_001'",
-                                    "ip_address": "类脑盒子的 IP 地址，如 '192.168.1.50'",
-                                    "port": "类脑盒子服务端口，默认 15001"
+                                    "metadata": "自定义元数据，如 {'location': '机房A'}"
                                 }
                             },
                             {

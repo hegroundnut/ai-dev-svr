@@ -2,14 +2,14 @@
 边缘服务器 uvaTrack 工具入口 — CTest 类
 平台通过 ProcessTask 调用 subfuncs 中定义的方法，每个方法接收 params 字典。
 
-架构变更:
-  无人机不再直接连接边缘服务器，而是先连接类脑盒子（BrainBox），
-  类脑盒子再将数据上报到边缘服务器。设备表与类脑盒子绑定。
+架构:
+  brainBox 通过 WebSocket 长连接主动连接 manageServer，
+  所有双向通信通过该长连接完成，brainBox 无需公网 IP。
 
-  ┌────────────────┐     HTTP/POST     ┌──────────────┐     MAVLink      ┌──────────┐
-  │  边缘控制服务   │ ◄──────────────► │  类脑盒子     │ ◄──────────────► │  无人机   │
-  │  Edge Server   │                   │  BrainBox    │                   │  Drones  │
-  └────────────────┘                   └──────────────┘                   └──────────┘
+  ┌────────────────┐   WebSocket 长连接  ┌──────────────┐    MAVLink      ┌──────────┐
+  │  边缘控制服务   │ ◄────────────────► │  类脑盒子     │ ◄──────────────► │  无人机   │
+  │  manageServer  │     (port 15002)    │  BrainBox    │   (TCP/UDP)     │  Drones  │
+  └────────────────┘                     └──────────────┘                  └──────────┘
 
 支持的子功能:
 
@@ -46,8 +46,7 @@
 add_brain_box:
 {
     "box_id": "brain_box_001",
-    "ip_address": "192.168.1.50",
-    "port": 9000
+    "metadata": {"location": "机房A", "version": "v0_0_0"}
 }
 
 remove_brain_box:
@@ -64,9 +63,7 @@ heartbeat (类脑盒子上报):
     "timestamp": 1715340000.123,
     "status": "running",
     "drone_count": 3,
-    "online_count": 3,
-    "ip_address": "192.168.1.50",
-    "port": 9000
+    "online_count": 3
 }
 
 drone_report (类脑盒子上报):
@@ -297,8 +294,6 @@ class CmanageServer:
         self.progress_callback(10, f"正在注册类脑盒子: {params.get('box_id')}")
         result = self._manager.add_brain_box(
             box_id=params["box_id"],
-            ip_address=params["ip_address"],
-            port=params.get("port", 9000),
             metadata=params.get("metadata", {}),
         )
         return self._handle_result("add_brain_box", result)

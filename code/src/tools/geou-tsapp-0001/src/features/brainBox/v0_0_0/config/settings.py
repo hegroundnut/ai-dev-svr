@@ -12,13 +12,9 @@ import yaml
 
 @dataclass
 class EdgeServerConfig:
-    """边缘控制服务器配置."""
+    """边缘控制服务器配置 (WebSocket 长连接)."""
 
-    base_url: str = ("http://127.0.0.1:15000")
     ws_url: str = "ws://127.0.0.1:15002"
-    heartbeat_path: str = "/api/manageServer/CmanageServer/heartbeat"
-    drone_report_path: str = "/api/manageServer/CmanageServer/drone_report"
-    trajectory_report_path: str = "/api/manageServer/CmanageServer/trajectory_report"
     heartbeat_interval: float = 5.0
     report_interval: float = 2.0
     timeout: float = 10.0
@@ -160,11 +156,7 @@ class Settings:
         if box_id_env:
             self.box_id = box_id_env
         env_map = {
-            "BRAIN_BOX_EDGE_URL": ("edge", "base_url"),
             "BRAIN_BOX_EDGE_WS_URL": ("edge", "ws_url"),
-            "BRAIN_BOX_EDGE_HEARTBEAT_PATH": ("edge", "heartbeat_path"),
-            "BRAIN_BOX_EDGE_DRONE_REPORT_PATH": ("edge", "drone_report_path"),
-            "BRAIN_BOX_EDGE_TRAJECTORY_REPORT_PATH": ("edge", "trajectory_report_path"),
             "BRAIN_BOX_EDGE_HEARTBEAT_INTERVAL": ("edge", "heartbeat_interval"),
             "BRAIN_BOX_MAVLINK_CONNECTION": ("mavlink", "connection_string"),
             "BRAIN_BOX_MAVLINK_SYSTEM_ID": ("mavlink", "system_id"),

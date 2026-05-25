@@ -3,10 +3,10 @@
 """
 from .manager import EdgeManager
 from .heartbeat import HeartbeatMonitor
-from .brain_box_client import BrainBoxClient
+from .ws_server import BrainBoxWSManager
 
 __all__ = [
     "EdgeManager",
     "HeartbeatMonitor",
-    "BrainBoxClient",
+    "BrainBoxWSManager",
 ]

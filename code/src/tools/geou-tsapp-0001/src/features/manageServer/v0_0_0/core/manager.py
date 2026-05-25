@@ -15,7 +15,6 @@ from models import (
 )
 from config.settings import settings
 from .heartbeat import HeartbeatMonitor
-from .brain_box_client import BrainBoxClient
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -29,9 +28,9 @@ class EdgeManager:
     边缘服务器核心管理器（单例）
 
     功能:
-    - 管理类脑盒子实例 (注册、移除、心跳监控)
+    - 管理类脑盒子实例 (WS 自动注册 / 手动注册 / 移除 / 心跳监控)
     - 管理无人机设备表 (由类脑盒子上报，绑定到对应 brain_box)
-    - 转发导航指令到类脑盒子
+    - 通过 WebSocket 转发指令到类脑盒子
     - 接收并存储轨迹上报
     """
 
@@ -63,7 +62,6 @@ class EdgeManager:
 
         self._ws_manager = ws_manager
         self._request_timeout = settings.request_timeout
-        self._client = BrainBoxClient(timeout=settings.request_timeout)
 
         self._heartbeat = HeartbeatMonitor(
             self,
@@ -84,23 +82,19 @@ class EdgeManager:
     def add_brain_box(
         self,
         box_id: str,
-        ip_address: str,
-        port: int = 9000,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """注册类脑盒子"""
+        """注册类脑盒子（WS 连接后通过 add_brain_box 手动注册或自动注册）"""
         with self._lock_internal:
             if box_id in self._brain_boxes:
                 return {"code": -1, "msg": f"类脑盒子 {box_id} 已存在", "data": {}}
 
             box = BrainBoxNode(
                 box_id=box_id,
-                ip_address=ip_address,
-                port=port,
                 metadata=metadata or {},
             )
             self._brain_boxes[box_id] = box
-            logger.info("BrainBox added: %s (%s:%d)", box_id, ip_address, port)
+            logger.info("BrainBox added: %s", box_id)
 
             return {"code": 0, "msg": "success", "data": box.to_dict()}
 
@@ -143,12 +137,7 @@ class EdgeManager:
     # ==================================================================
 
     def receive_heartbeat(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        接收类脑盒子心跳
-
-        brain_box 定期调用此接口上报自身状态。
-        如果 box_id 尚未注册且提供了 ip/port 信息，则自动注册。
-        """
+        """接收类脑盒子心跳（通过 WS event 自动上报，HTTP 接口作为备用）。"""
         box_id = params.get("box_id", "")
         with self._lock_internal:
             if box_id in self._brain_boxes:
@@ -161,25 +150,11 @@ class EdgeManager:
                     logger.info("BrainBox %s back online", box_id)
                 return {"code": 0, "msg": "success", "data": box.to_dict()}
 
-            ip_address = params.get("ip_address", "")
-            port = params.get("port", 9000)
-            if not ip_address:
-                return {
-                    "code": -1,
-                    "msg": f"类脑盒子 {box_id} 未注册，且心跳中缺少 ip_address",
-                    "data": {},
-                }
-
-            box = BrainBoxNode(
-                box_id=box_id,
-                ip_address=ip_address,
-                port=port,
-                drone_count=params.get("drone_count", 0),
-                online_drone_count=params.get("online_count", 0),
-            )
-            self._brain_boxes[box_id] = box
-            logger.info("BrainBox auto-registered from heartbeat: %s", box_id)
-            return {"code": 0, "msg": "auto-registered", "data": box.to_dict()}
+            return {
+                "code": -1,
+                "msg": f"类脑盒子 {box_id} 未注册，请先通过 WS 连接或手动注册",
+                "data": {},
+            }
 
     # ==================================================================
     #  无人机状态上报（brain_box → edge_server）
@@ -315,11 +290,11 @@ class EdgeManager:
             return {"code": 0, "msg": "success", "data": dev.to_dict()}
 
     # ==================================================================
-    #  通用指令发送（优先 WS，回退 HTTP）
+    #  指令发送（WebSocket）
     # ==================================================================
 
     def _send_command_to_box(self, box_id: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Send a command to a brainBox — WS preferred, HTTP fallback."""
+        """通过 WebSocket 向 brainBox 发送指令并等待响应。"""
         with self._lock_internal:
             box = self._brain_boxes.get(box_id)
             if not box:
@@ -327,36 +302,18 @@ class EdgeManager:
             if box.status == BrainBoxStatus.OFFLINE:
                 return {"code": -1, "msg": f"类脑盒子 {box_id} 离线", "data": {}}
 
-        if self._ws_manager and self._ws_manager.is_connected(box_id):
-            try:
-                resp = self._ws_manager.send_request(
-                    box_id, action, payload, timeout=self._request_timeout
-                )
-                return resp
-            except TimeoutError:
-                return {"code": -1, "msg": f"请求 {box_id} 超时", "data": {}}
-            except ConnectionError:
-                self.mark_brain_box_offline(box_id, reason="ws_disconnected")
-                return {"code": -1, "msg": f"类脑盒子 {box_id} WebSocket 连接断开", "data": {}}
+        if not self._ws_manager or not self._ws_manager.is_connected(box_id):
+            return {"code": -1, "msg": f"类脑盒子 {box_id} WebSocket 未连接", "data": {}}
 
-        # HTTP fallback
-        base_url = box.base_url
-        return self._http_command_to_box(base_url, action, payload)
-
-    def _http_command_to_box(self, base_url: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """HTTP fallback for sending commands to brainBox."""
-        _method_map = {
-            "connect_drone": self._client.connect_drone,
-            "disconnect_drone": self._client.disconnect_drone,
-            "connections": self._client.list_connections,
-            "scan": self._client.scan_drones,
-            "query": self._client.query_drones,
-            "command": self._client.send_command,
-        }
-        method = _method_map.get(action)
-        if method:
-            return method(base_url, **payload)
-        return self._client._post(base_url, self._client._api_url + "/" + action, payload)
+        try:
+            return self._ws_manager.send_request(
+                box_id, action, payload, timeout=self._request_timeout
+            )
+        except TimeoutError:
+            return {"code": -1, "msg": f"请求 {box_id} 超时", "data": {}}
+        except ConnectionError:
+            self.mark_brain_box_offline(box_id, reason="ws_disconnected")
+            return {"code": -1, "msg": f"类脑盒子 {box_id} WebSocket 连接断开", "data": {}}
 
     def on_ws_event(self, action: str, payload: Dict[str, Any]) -> None:
         """Handle incoming WS event from a brainBox (called from WS event loop thread)."""
@@ -366,8 +323,6 @@ class EdgeManager:
                 if box_id and box_id not in self._brain_boxes:
                     box = BrainBoxNode(
                         box_id=box_id,
-                        ip_address="ws",
-                        port=0,
                         ws_connected=True,
                     )
                     self._brain_boxes[box_id] = box
@@ -387,31 +342,31 @@ class EdgeManager:
     def forward_connect_drone(
         self, box_id: str, ip: str, port: int = 5760, label: str = ""
     ) -> Dict[str, Any]:
-        """通过 WS（或 HTTP 回退）转发 TCP 连接无人机指令到指定类脑盒子"""
+        """通过 WS 转发 TCP 连接无人机指令到指定类脑盒子"""
         return self._send_command_to_box(box_id, "connect_drone", {
             "ip": ip, "port": port, "label": label,
         })
 
     def forward_disconnect_drone(self, box_id: str, device_id: str) -> Dict[str, Any]:
-        """通过 WS（或 HTTP 回退）转发断开无人机指令到指定类脑盒子"""
+        """通过 WS 转发断开无人机指令到指定类脑盒子"""
         return self._send_command_to_box(box_id, "disconnect_drone", {
             "device_id": device_id,
         })
 
     def forward_list_connections(self, box_id: str) -> Dict[str, Any]:
-        """通过 WS（或 HTTP 回退）转发查询 TCP 连接列表指令到指定类脑盒子"""
+        """通过 WS 转发查询 TCP 连接列表指令到指定类脑盒子"""
         return self._send_command_to_box(box_id, "connections", {})
 
     def forward_scan_drones(self, box_id: str) -> Dict[str, Any]:
-        """通过 WS（或 HTTP 回退）转发扫描指令到指定类脑盒子"""
+        """通过 WS 转发扫描指令到指定类脑盒子"""
         return self._send_command_to_box(box_id, "scan", {})
 
     def forward_query_drones(self, box_id: str, query: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """通过 WS（或 HTTP 回退）转发查询指令到指定类脑盒子"""
+        """通过 WS 转发查询指令到指定类脑盒子"""
         return self._send_command_to_box(box_id, "query", query or {})
 
     def forward_command(self, box_id: str, device_id: str, command: Dict[str, Any]) -> Dict[str, Any]:
-        """通过 WS（或 HTTP 回退）转发控制指令到指定类脑盒子"""
+        """通过 WS 转发控制指令到指定类脑盒子"""
         return self._send_command_to_box(box_id, "command", {
             "device_id": device_id, "command": command,
         })
@@ -422,7 +377,7 @@ class EdgeManager:
 
     def send_navigation_instruction(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        下发导航指令（异步转发，支持 WS 和 HTTP 回退）
+        下发导航指令（通过 WS 异步转发）
 
         创建本地任务记录后，在后台线程中将导航指令转发给 brain_box，
         立即返回任务信息（status=PENDING）。
@@ -486,12 +441,21 @@ class EdgeManager:
         return {"code": 0, "msg": "success", "data": task.to_dict()}
 
     def execute_trajectory(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """通过 WS（或 HTTP 回退）转发轨迹执行指令"""
+        """通过 WS 转发轨迹执行指令，成功后更新任务状态"""
         box_id = params.get("box_id", "")
         trajectory_id = params.get("trajectory_id", "")
-        return self._send_command_to_box(box_id, "execute", {
+        result = self._send_command_to_box(box_id, "execute", {
             "trajectory_id": trajectory_id,
         })
+        if result.get("code", -1) == 0:
+            with self._lock_internal:
+                for task in self._tasks.values():
+                    if task.trajectory_id == trajectory_id and task.status == NavigationStatus.EXECUTING:
+                        task.status = NavigationStatus.COMPLETED
+                        task.completed_at = time.time()
+                        logger.info("Task %s completed via execute_trajectory", task.task_id)
+                        break
+        return result
 
     def list_tasks(self, box_id: str = "all") -> Dict[str, Any]:
         """查询导航任务列表"""
@@ -542,7 +506,7 @@ class EdgeManager:
             return list(self._brain_boxes.values())
 
     def get_brain_box_status(self, box_id: str) -> Dict[str, Any]:
-        """通过 WS（或 HTTP 回退）查询类脑盒子详细状态"""
+        """通过 WS 查询类脑盒子详细状态"""
         return self._send_command_to_box(box_id, "status", {})
 
     def shutdown(self) -> None:
