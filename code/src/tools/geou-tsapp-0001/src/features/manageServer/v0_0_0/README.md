@@ -74,9 +74,9 @@ POST /api/manageServer/CmanageServer/{subfunc}
 
 | subfunc | 说明 | 参数示例 |
 |---------|------|----------|
-| `add_brain_box` | 注册类脑盒子（也可由 WS 首次心跳自动注册） | `{"box_id": "brain_box_001", "metadata": {"location": "机房A"}}` |
-| `remove_brain_box` | 移除类脑盒子及关联设备 | `{"box_id": "brain_box_001"}` |
-| `list_brain_boxes` | 获取已注册的类脑盒子列表 | `{}` |
+| `update_brain_box_meta` | 更新类脑盒子元数据（盒子通过WS自动发现） | `{"box_id": "brain_box_001", "metadata": {"location": "机房A"}}` |
+| `blacklist_brain_box` | 拉黑类脑盒子，阻止其重新连接 | `{"box_id": "brain_box_001"}` |
+| `list_brain_boxes` | 获取类脑盒子列表 | `{}` |
 | `get_brain_box_status` | 查询类脑盒子详细状态（通过 WS 远程调用） | `{"box_id": "brain_box_001"}` |
 
 ### 数据接收（brainBox → manageServer，优先 WS）
@@ -132,7 +132,7 @@ POST /api/manageServer/CmanageServer/{subfunc}
 ## 核心机制
 
 1. **WebSocket 长连接**: brainBox 启动后主动连接 manageServer 的 WS 端口（15002），发送 `auth` 消息注册。之后所有心跳、上报、指令全通过该连接。
-2. **自动注册**: 首次收到 brainBox 的 WS 心跳时自动注册该类脑盒子，无需手动调用 `add_brain_box`。
+2. **自动发现**: 首次收到 brainBox 的 WS 心跳时自动发现该类脑盒子，无需手动调用 `update_brain_box_meta`。
 3. **心跳与超时管理**: 若超过 `box_timeout_s`（默认 30 秒）未收到心跳，标记该类脑盒子为离线，其下设备也标记为离线。
 4. **重复连接拒绝**: 同一 box_id 已有活跃 WS 连接时，新的连接请求被拒绝（close code 4002）。
 5. **指令透传**: 所有控制指令通过 WS 发送至 brainBox，由 brainBox 通过 MAVLink 下发至无人机。

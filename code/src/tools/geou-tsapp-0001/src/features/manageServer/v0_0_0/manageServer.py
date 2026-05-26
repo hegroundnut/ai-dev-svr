@@ -14,10 +14,10 @@
 支持的子功能:
 
   类脑盒子管理:
-    add_brain_box         注册类脑盒子实例到边缘服务器
-    remove_brain_box      移除类脑盒子实例
-    list_brain_boxes      获取已注册的类脑盒子列表
-    get_brain_box_status  查询类脑盒子详细状态（远程调用）
+    update_brain_box_meta  更新类脑盒子元数据
+    blacklist_brain_box    拉黑类脑盒子（阻止其重新连接）
+    list_brain_boxes       获取类脑盒子列表
+    get_brain_box_status   查询类脑盒子详细状态（远程调用）
 
   数据接收（类脑盒子 → 边缘服务器）:
     heartbeat             接收类脑盒子心跳上报
@@ -43,13 +43,13 @@
 
 --- params JSON 格式示例 ---
 
-add_brain_box:
+update_brain_box_meta:
 {
     "box_id": "brain_box_001",
     "metadata": {"location": "机房A", "version": "v0_0_0"}
 }
 
-remove_brain_box:
+blacklist_brain_box:
 {
     "box_id": "brain_box_001"
 }
@@ -246,6 +246,9 @@ class CmanageServer:
             ws_manager=self._ws_manager,
         )
 
+        # Wire blacklist check to WS server (must happen after EdgeManager init)
+        self._ws_manager._is_blacklisted = self._manager._registry.is_blacklisted
+
     # ------------------------------------------------------------------
     #  回调
     # ------------------------------------------------------------------
@@ -289,25 +292,25 @@ class CmanageServer:
     #  类脑盒子管理
     # ==================================================================
 
-    def add_brain_box(self, params):
-        """注册类脑盒子实例到边缘服务器"""
-        self.progress_callback(10, f"正在注册类脑盒子: {params.get('box_id')}")
-        result = self._manager.add_brain_box(
+    def update_brain_box_meta(self, params):
+        """更新类脑盒子元数据"""
+        self.progress_callback(10, f"正在更新类脑盒子元数据: {params.get('box_id')}")
+        result = self._manager.update_brain_box_meta(
             box_id=params["box_id"],
             metadata=params.get("metadata", {}),
         )
-        return self._handle_result("add_brain_box", result)
+        return self._handle_result("update_brain_box_meta", result)
 
-    def remove_brain_box(self, params):
-        """移除类脑盒子实例"""
-        self.progress_callback(10, f"正在移除类脑盒子: {params.get('box_id')}")
-        result = self._manager.remove_brain_box(
+    def blacklist_brain_box(self, params):
+        """拉黑类脑盒子"""
+        self.progress_callback(10, f"正在拉黑类脑盒子: {params.get('box_id')}")
+        result = self._manager.blacklist_brain_box(
             box_id=params["box_id"],
         )
-        return self._handle_result("remove_brain_box", result)
+        return self._handle_result("blacklist_brain_box", result)
 
     def list_brain_boxes(self, params):
-        """获取已注册的类脑盒子列表"""
+        """获取类脑盒子列表"""
         self.progress_callback(10, "正在查询类脑盒子列表")
         result = self._manager.list_brain_boxes()
         return self._handle_result("list_brain_boxes", result)

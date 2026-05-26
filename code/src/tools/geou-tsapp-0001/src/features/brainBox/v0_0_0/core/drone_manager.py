@@ -20,6 +20,16 @@ logger = logging.getLogger("brainBox.core.drone_manager")
 _DEVICE_EVICT_TIMEOUT: float = 60.0
 
 
+def _fmt_duration(seconds: float) -> str:
+    """将秒数格式化为可读的时长字符串."""
+    s = int(seconds)
+    if s < 120:
+        return f"{s}s"
+    if s < 7200:
+        return f"{s // 60}m{s % 60}s"
+    return f"{s // 3600}h{(s % 3600) // 60}m{s % 60}s"
+
+
 class DroneManager:
     """
     无人机管理器.
@@ -170,9 +180,9 @@ class DroneManager:
                     evicted_at=now,
                 )
                 logger.info(
-                    "设备 %s 已超时 %.0fs，从内存驱逐并写入历史记录",
+                    "设备 %s 已超时 %s，从内存驱逐并写入历史记录",
                     device_id,
-                    now - device.last_heartbeat,
+                    _fmt_duration(now - device.last_heartbeat),
                 )
             except Exception:
                 logger.exception("设备 %s 写入历史记录失败", device_id)

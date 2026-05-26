@@ -27,7 +27,7 @@ class EdgeManager:
     边缘服务器核心管理器（单例）
 
     功能:
-    - 管理类脑盒子实例 (WS 自动注册 / 手动注册 / 移除 / 心跳监控)
+    - 管理类脑盒子实例 (WS 自动发现 / 更新元数据 / 拉黑 / 心跳监控)
     - 管理无人机设备表 (由类脑盒子上报，绑定到对应 brain_box)
     - 通过 WebSocket 转发指令到类脑盒子
     - 接收并存储轨迹上报
@@ -77,17 +77,19 @@ class EdgeManager:
     #  类脑盒子管理
     # ==================================================================
 
-    def add_brain_box(
+    def update_brain_box_meta(
         self,
         box_id: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """注册类脑盒子（WS 连接后通过 add_brain_box 手动注册或自动注册）"""
-        return self._registry.add_box(box_id, metadata)
+        """更新类脑盒子元数据（盒子通过 WS 自动发现，不存在则创建）"""
+        return self._registry.update_box_meta(box_id, metadata)
 
-    def remove_brain_box(self, box_id: str) -> Dict[str, Any]:
-        """移除类脑盒子并清理其关联的设备"""
-        return self._registry.remove_box(box_id)
+    def blacklist_brain_box(self, box_id: str) -> Dict[str, Any]:
+        """拉黑类脑盒子并断开其 WebSocket 连接"""
+        if self._ws_manager and self._ws_manager.is_connected(box_id):
+            self._ws_manager.disconnect(box_id)
+        return self._registry.blacklist_box(box_id)
 
     def list_brain_boxes(self) -> Dict[str, Any]:
         """获取所有类脑盒子列表"""
@@ -117,8 +119,10 @@ class EdgeManager:
         brain_box 定期/即时上报其管辖的无人机信息。
         """
         box_id = params.get("box_id", "")
+        if self._registry.is_blacklisted(box_id):
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 已被拉黑", "data": {}}
         if not self._registry.box_exists(box_id):
-            return {"code": -1, "msg": f"类脑盒子 {box_id} 未注册", "data": {}}
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
 
         devices_data = params.get("devices", [])
         event = params.get("event", "")
@@ -148,8 +152,10 @@ class EdgeManager:
         trajectory = params.get("trajectory", {})
 
         with self._lock_internal:
+            if self._registry.is_blacklisted(box_id):
+                return {"code": -1, "msg": f"类脑盒子 {box_id} 已被拉黑", "data": {}}
             if not self._registry.box_exists(box_id):
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 未注册", "data": {}}
+                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
 
             trajectory_id = trajectory.get("trajectory_id", "")
             device_id = trajectory.get("device_id", "")
@@ -198,6 +204,8 @@ class EdgeManager:
 
     def _send_command_to_box(self, box_id: str, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """通过 WebSocket 向 brainBox 发送指令并等待响应。"""
+        if self._registry.is_blacklisted(box_id):
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 已被拉黑", "data": {}}
         box = self._registry.get_box(box_id)
         if not box:
             return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
@@ -221,10 +229,13 @@ class EdgeManager:
         """Handle incoming WS event from a brainBox (called from WS event loop thread)."""
         if action == "heartbeat":
             box_id = payload.get("box_id", "")
+            if box_id and self._registry.is_blacklisted(box_id):
+                logger.warning("Rejected heartbeat from blacklisted BrainBox: %s", box_id)
+                return
             if box_id and not self._registry.box_exists(box_id):
-                self._registry.add_box(box_id, {})
+                self._registry.update_box_meta(box_id, {})
                 self._registry.set_box_ws_connected(box_id, True)
-                logger.info("BrainBox auto-registered via WS: %s", box_id)
+                logger.info("BrainBox auto-discovered via WS: %s", box_id)
             elif box_id:
                 self._registry.set_box_ws_connected(box_id, True)
             self.receive_heartbeat(payload)
@@ -287,6 +298,8 @@ class EdgeManager:
         algorithm = params.get("algorithm", "simple_linear")
         parameters = params.get("parameters", {})
 
+        if self._registry.is_blacklisted(box_id):
+            return {"code": -1, "msg": f"类脑盒子 {box_id} 已被拉黑", "data": {}}
         box = self._registry.get_box(box_id)
         if not box:
             return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}

@@ -21,37 +21,53 @@ class BrainBoxRegistry:
         self._lock = threading.RLock()
         self._boxes: Dict[str, BrainBoxNode] = {}
         self._devices: Dict[str, DroneDevice] = {}
+        self._blacklist: set = set()
 
     # ── Box CRUD ─────────────────────────────────────────────
 
-    def add_box(
+    def update_box_meta(
         self, box_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """注册类脑盒子."""
+        """更新类脑盒子元数据（盒子通过 WS 自动发现，不存在则创建）."""
         with self._lock:
             if box_id in self._boxes:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 已存在", "data": {}}
+                box = self._boxes[box_id]
+                if metadata:
+                    box.metadata.update(metadata)
+                logger.info("BrainBox meta updated: %s", box_id)
+                return {"code": 0, "msg": "success", "data": box.to_dict()}
             box = BrainBoxNode(box_id=box_id, metadata=metadata or {})
             self._boxes[box_id] = box
-            logger.info("BrainBox added: %s", box_id)
+            logger.info("BrainBox discovered: %s", box_id)
             return {"code": 0, "msg": "success", "data": box.to_dict()}
 
-    def remove_box(self, box_id: str) -> Dict[str, Any]:
-        """移除类脑盒子并清理其关联设备."""
+    def blacklist_box(self, box_id: str) -> Dict[str, Any]:
+        """拉黑类脑盒子，阻止其重新连接（保留历史数据）. """
         with self._lock:
-            if box_id not in self._boxes:
-                return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
-            box = self._boxes.pop(box_id)
-            removed_devices = [
-                did for did, d in self._devices.items() if d.box_id == box_id
-            ]
-            for did in removed_devices:
-                self._devices.pop(did)
-            logger.info(
-                "BrainBox removed: %s (cleaned %d devices)",
-                box_id, len(removed_devices),
-            )
-            return {"code": 0, "msg": "success", "data": box.to_dict()}
+            self._blacklist.add(box_id)
+            box = self._boxes.get(box_id)
+            if box:
+                box.status = BrainBoxStatus.BLACKLISTED
+                box.ws_connected = False
+                logger.warning("BrainBox blacklisted: %s", box_id)
+                return {"code": 0, "msg": "success", "data": box.to_dict()}
+            logger.warning("BrainBox blacklisted (not in registry): %s", box_id)
+            return {"code": 0, "msg": "success", "data": {}}
+
+    def unblacklist_box(self, box_id: str) -> Dict[str, Any]:
+        """取消拉黑."""
+        with self._lock:
+            self._blacklist.discard(box_id)
+            box = self._boxes.get(box_id)
+            if box and box.status == BrainBoxStatus.BLACKLISTED:
+                box.status = BrainBoxStatus.OFFLINE
+            logger.info("BrainBox unblacklisted: %s", box_id)
+            return {"code": 0, "msg": "success", "data": {}}
+
+    def is_blacklisted(self, box_id: str) -> bool:
+        """检查类脑盒子是否已被拉黑."""
+        with self._lock:
+            return box_id in self._blacklist
 
     def get_box(self, box_id: str) -> Optional[BrainBoxNode]:
         """获取单个类脑盒子."""
@@ -76,7 +92,7 @@ class BrainBoxRegistry:
             }
 
     def box_exists(self, box_id: str) -> bool:
-        """检查类脑盒子是否已注册."""
+        """检查类脑盒子是否已在注册表中."""
         with self._lock:
             return box_id in self._boxes
 
@@ -94,11 +110,17 @@ class BrainBoxRegistry:
     ) -> Dict[str, Any]:
         """更新类脑盒子心跳."""
         with self._lock:
+            if box_id in self._blacklist:
+                return {
+                    "code": -1,
+                    "msg": f"类脑盒子 {box_id} 已被拉黑",
+                    "data": {},
+                }
             box = self._boxes.get(box_id)
             if not box:
                 return {
                     "code": -1,
-                    "msg": f"类脑盒子 {box_id} 未注册，请先通过 WS 连接或手动注册",
+                    "msg": f"类脑盒子 {box_id} 不存在",
                     "data": {},
                 }
             box.last_heartbeat = time.time()
@@ -135,7 +157,7 @@ class BrainBoxRegistry:
                     metadata=device_data.get("metadata", {}),
                 )
                 self._devices[device_id] = dev
-                logger.info("Drone registered: %s (box=%s)", device_id, box_id)
+                logger.info("Drone discovered: %s (box=%s)", device_id, box_id)
 
     def list_devices(self, box_id: str = "all") -> Dict[str, Any]:
         """获取无人机设备列表."""

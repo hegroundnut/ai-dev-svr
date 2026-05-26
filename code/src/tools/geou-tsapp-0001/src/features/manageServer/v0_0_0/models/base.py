@@ -9,6 +9,7 @@ class BrainBoxStatus(Enum):
     ONLINE = "online"
     OFFLINE = "offline"
     ERROR = "error"
+    BLACKLISTED = "blacklisted"
 
 
 class DeviceStatus(Enum):

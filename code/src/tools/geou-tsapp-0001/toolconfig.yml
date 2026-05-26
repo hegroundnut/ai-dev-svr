@@ -12,23 +12,23 @@ tools_sync_cfgs: {
                         "version": "0.0.0",
                         "subfuncs": [
                             {
-                                "func_name": "add_brain_box",
-                                "func_desc": "注册类脑盒子实例到边缘服务器（也可由 WS 首次心跳自动注册）",
+                                "func_name": "update_brain_box_meta",
+                                "func_desc": "更新类脑盒子元数据（盒子通过WS自动发现，此接口仅更新元信息）",
                                 "params": {
                                     "box_id": "类脑盒子唯一标识符，如 'brain_box_001'",
                                     "metadata": "自定义元数据，如 {'location': '机房A'}"
                                 }
                             },
                             {
-                                "func_name": "remove_brain_box",
-                                "func_desc": "移除类脑盒子实例及其关联的设备",
+                                "func_name": "blacklist_brain_box",
+                                "func_desc": "拉黑类脑盒子，阻止其重新连接",
                                 "params": {
-                                    "box_id": "需要移除的类脑盒子唯一标识符"
+                                    "box_id": "需要拉黑的类脑盒子唯一标识符"
                                 }
                             },
                             {
                                 "func_name": "list_brain_boxes",
-                                "func_desc": "获取已注册的类脑盒子列表及状态",
+                                "func_desc": "获取类脑盒子列表及状态",
                                 "params": {}
                             },
                             {
@@ -40,7 +40,7 @@ tools_sync_cfgs: {
                             },
                             {
                                 "func_name": "heartbeat",
-                                "func_desc": "接收类脑盒子心跳上报，维持在线状态（支持自动注册）",
+                                "func_desc": "接收类脑盒子心跳上报，维持在线状态（支持自动发现）",
                                 "params": {
                                     "box_id": "类脑盒子唯一标识符",
                                     "timestamp": "上报时间戳（Unix 秒）",

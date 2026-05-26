@@ -46,12 +46,14 @@ class BrainBoxWSManager:
         on_event: Optional[EventCallback] = None,
         on_box_offline: Optional[OfflineCallback] = None,
         request_timeout: float = 30.0,
+        is_blacklisted: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self._host = host
         self._port = port
         self._on_event = on_event
         self._on_box_offline = on_box_offline
         self._request_timeout = request_timeout
+        self._is_blacklisted = is_blacklisted
 
         self._lock = threading.Lock()
         self._connections: Dict[str, WebSocketServerProtocol] = {}
@@ -139,6 +141,12 @@ class BrainBoxWSManager:
             return
         except Exception:
             logger.exception("Auth error")
+            return
+
+        # Reject blacklisted boxes
+        if self._is_blacklisted and self._is_blacklisted(box_id):
+            logger.warning("BrainBox %s is blacklisted — connection rejected", box_id)
+            await ws.close(4003, f"BrainBox {box_id} is blacklisted")
             return
 
         # Register connection — reject if box_id is already connected
@@ -287,3 +295,14 @@ class BrainBoxWSManager:
     def connected_boxes(self) -> list[str]:
         with self._lock:
             return list(self._connections.keys())
+
+    def disconnect(self, box_id: str) -> None:
+        """主动断开指定类脑盒子的 WebSocket 连接."""
+        ws: Optional[WebSocketServerProtocol] = None
+        with self._lock:
+            ws = self._connections.get(box_id)
+        if ws and self._loop:
+            self._loop.call_soon_threadsafe(
+                ws.close, 4001, "Server initiated disconnect"
+            )
+            logger.info("BrainBox %s disconnected by server", box_id)
