@@ -1,0 +1,6 @@
+uvicorn
+fastapi
+pyyaml
+httpx
+websockets
+pymavlink
