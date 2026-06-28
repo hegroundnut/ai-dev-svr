@@ -93,6 +93,7 @@ class BrainBoxManager:
             "execute": ("execute_trajectory", True, True),
             "trajectories": ("list_trajectories", False, False),
             "algorithms": ("list_algorithms", False, False),
+            "list_tasks": ("list_tasks", False, True),
             "status": ("system_status", False, False),
             "protocols": ("list_protocols", False, False),
         }
@@ -229,6 +230,12 @@ class BrainBoxManager:
         """列出可用导航算法."""
         algorithms = self._navigation_service.list_algorithms()
         return {"code": 0, "msg": "success", "data": algorithms}
+
+    def list_tasks(self, params: dict[str, Any]) -> dict[str, Any]:
+        """按 instruction_id 查询任务列表."""
+        instruction_id = params.get("instruction_id", "")
+        tasks = self._navigation_service.list_tasks(instruction_id=instruction_id)
+        return {"code": 0, "msg": "success", "data": {"total": len(tasks), "tasks": tasks}}
 
     # ── 系统 ──
 

@@ -39,6 +39,7 @@ class NavigationTrajectory:
     algorithm_name: str
     total_distance: float = 0.0
     estimated_time: float = 0.0
+    instruction_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,6 +50,7 @@ class NavigationTrajectory:
             "algorithm_name": self.algorithm_name,
             "total_distance": self.total_distance,
             "estimated_time": self.estimated_time,
+            "instruction_id": self.instruction_id,
             "metadata": self.metadata,
         }
 

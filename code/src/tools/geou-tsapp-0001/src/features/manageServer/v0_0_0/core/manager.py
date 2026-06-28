@@ -368,8 +368,11 @@ class EdgeManager:
                         break
         return result
 
-    def list_tasks(self, box_id: str = "all") -> Dict[str, Any]:
-        """查询导航任务列表"""
+    def list_tasks(self, box_id: str = "all", instruction_id: str = "") -> Dict[str, Any]:
+        """查询导航任务列表（instruction_id 非空时转发到 brainBox 筛选）"""
+        if instruction_id:
+            return self._list_tasks_from_boxes(box_id, instruction_id)
+
         with self._lock_internal:
             if box_id != "all" and not self._registry.box_exists(box_id):
                 return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
@@ -384,6 +387,36 @@ class EdgeManager:
                     "tasks": [t.to_dict() for t in tasks],
                 },
             }
+
+    def _list_tasks_from_boxes(self, box_id: str, instruction_id: str) -> Dict[str, Any]:
+        """向 brainBox 转发 list_tasks 请求，由 brainBox 按 instruction_id 筛选."""
+        all_tasks: List[Dict[str, Any]] = []
+        if box_id != "all":
+            boxes_to_query = [box_id]
+        else:
+            boxes_to_query = [b.box_id for b in self._registry.get_all_boxes()]
+
+        for bid in boxes_to_query:
+            if self._registry.is_blacklisted(bid):
+                continue
+            box = self._registry.get_box(bid)
+            if not box or box.status == BrainBoxStatus.OFFLINE:
+                continue
+            result = self._send_command_to_box(bid, "list_tasks", {"instruction_id": instruction_id})
+            if result.get("code", -1) == 0:
+                tasks = result.get("data", {}).get("tasks", [])
+                for t in tasks:
+                    t["box_id"] = bid
+                all_tasks.extend(tasks)
+
+        return {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "total": len(all_tasks),
+                "tasks": all_tasks,
+            },
+        }
 
     def get_task_info(self, task_id: str) -> Optional[Dict[str, Any]]:
         """获取任务详情"""

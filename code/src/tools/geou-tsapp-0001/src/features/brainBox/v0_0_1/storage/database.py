@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS trajectories (
     algorithm_name  TEXT NOT NULL,
     total_distance  REAL DEFAULT 0.0,
     estimated_time  REAL DEFAULT 0.0,
+    instruction_id  TEXT DEFAULT '',
     waypoints_json  TEXT NOT NULL,
     metadata_json   TEXT DEFAULT '{}',
     created_at      REAL NOT NULL,
@@ -30,6 +31,9 @@ CREATE INDEX IF NOT EXISTS idx_trajectories_device
 
 CREATE INDEX IF NOT EXISTS idx_trajectories_created
     ON trajectories (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_trajectories_instruction
+    ON trajectories (instruction_id);
 
 CREATE TABLE IF NOT EXISTS device_history (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +83,12 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON;")
         self._conn.executescript(_DDL)
         self._conn.commit()
+        # migrate existing DBs that lack the instruction_id column
+        try:
+            self._conn.execute("ALTER TABLE trajectories ADD COLUMN instruction_id TEXT DEFAULT ''")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
         logger.info("数据库已打开: %s", self._db_path)
 
     def close(self) -> None:
@@ -107,14 +117,15 @@ class Database:
         metadata: dict[str, Any],
         created_at: float | None = None,
         status: str = "pending",
+        instruction_id: str = "",
     ) -> None:
         """将轨迹写入数据库."""
         self.conn.execute(
             """
             INSERT OR REPLACE INTO trajectories
                 (trajectory_id, device_id, algorithm_name, total_distance,
-                 estimated_time, waypoints_json, metadata_json, created_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 estimated_time, instruction_id, waypoints_json, metadata_json, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trajectory_id,
@@ -122,6 +133,7 @@ class Database:
                 algorithm_name,
                 total_distance,
                 estimated_time,
+                instruction_id,
                 json.dumps(waypoints, ensure_ascii=False),
                 json.dumps(metadata, ensure_ascii=False),
                 created_at if created_at is not None else time.time(),
@@ -166,6 +178,18 @@ class Database:
         rows = self.conn.execute(
             f"SELECT * FROM trajectories {where} ORDER BY created_at DESC LIMIT ?",  # noqa: S608
             params,
+        ).fetchall()
+        return [_row_to_trajectory(r) for r in rows]
+
+    def list_tasks_by_instruction(
+        self,
+        instruction_id: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """按 instruction_id 查询轨迹列表."""
+        rows = self.conn.execute(
+            "SELECT * FROM trajectories WHERE instruction_id=? ORDER BY created_at DESC LIMIT ?",
+            (instruction_id, limit),
         ).fetchall()
         return [_row_to_trajectory(r) for r in rows]
 

@@ -448,6 +448,7 @@ class CmanageServer:
     def list_tasks(self, params):
         """查询导航任务列表"""
         box_id = params.get("box_id", "all")
+        instruction_id = params.get("instruction_id", "")
         self.progress_callback(10, "正在查询任务列表")
-        result = self._manager.list_tasks(box_id=box_id)
+        result = self._manager.list_tasks(box_id=box_id, instruction_id=instruction_id)
         return self._handle_result("list_tasks", result)

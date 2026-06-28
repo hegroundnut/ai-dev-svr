@@ -159,7 +159,8 @@ tools_sync_cfgs: {
                                 "func_name": "list_tasks",
                                 "func_desc": "查询导航任务列表",
                                 "params": {
-                                    "box_id": "类脑盒子标识符，传 'all' 查询所有"
+                                    "box_id": "类脑盒子标识符，传 'all' 查询所有",
+                                    "instruction_id": "可选，根据id过滤",
                                 }
                             }
                         ]

@@ -70,6 +70,8 @@ class NavigationService:
             parameters=instruction.parameters,
         )
 
+        trajectory.instruction_id = instruction.instruction_id
+
         # 写入数据库（pending 状态）
         self._db.save_trajectory(
             trajectory_id=trajectory.trajectory_id,
@@ -81,6 +83,7 @@ class NavigationService:
             metadata=trajectory.metadata,
             created_at=time.time(),
             status="pending",
+            instruction_id=instruction.instruction_id,
         )
 
         # 仅在内存中暂存，等待执行
@@ -147,3 +150,21 @@ class NavigationService:
     def list_protocols(self) -> list[str]:
         """列出已注册通信协议."""
         return self._protocol_registry.list_protocols()
+
+    def list_tasks(self, instruction_id: str = "") -> list[dict[str, Any]]:
+        """按 instruction_id 查询任务列表（先在内存查，再从 DB 查历史）."""
+        tasks: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for tid, t in self._active_trajectories.items():
+            if instruction_id and t.instruction_id != instruction_id:
+                continue
+            tasks.append(t.to_dict())
+            seen.add(tid)
+
+        db_rows = self._db.list_tasks_by_instruction(instruction_id) if instruction_id else []
+        for row in db_rows:
+            if row["trajectory_id"] not in seen:
+                tasks.append(row)
+
+        return tasks
