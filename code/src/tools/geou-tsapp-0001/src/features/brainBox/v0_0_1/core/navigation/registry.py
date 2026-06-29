@@ -322,9 +322,9 @@ class WebApiLatLngAlgorithm(NavigationAlgorithm):
     #  最小二乘工具 (无 numpy 依赖)
     # ------------------------------------------------------------------
 
-    @staticmethod
+    @classmethod
     def _solve_affine_2d(
-        u: list[float], v: list[float], w: list[float],
+        cls, u: list[float], v: list[float], w: list[float],
     ) -> tuple[float, float, float]:
         """
         最小二乘解  w = A*u + B*v + C.
@@ -357,9 +357,9 @@ class WebApiLatLngAlgorithm(NavigationAlgorithm):
         C = cls._det3(m11, m12, suw, m21, m22, svw, m31, m32, sw) / det
         return A, B, C
 
-    @staticmethod
+    @classmethod
     def _solve_linear(
-        u: list[float], w: list[float],
+        cls, u: list[float], w: list[float],
     ) -> tuple[float, float]:
         """最小二乘解  w = G*u + H."""
         n = len(u)
@@ -374,9 +374,9 @@ class WebApiLatLngAlgorithm(NavigationAlgorithm):
         H = (suu * sw - su * suw) / denom
         return G, H
 
-    @staticmethod
+    @classmethod
     def _det3(
-        a11, a12, a13,
+        cls, a11, a12, a13,
         a21, a22, a23,
         a31, a32, a33,
     ) -> float:
