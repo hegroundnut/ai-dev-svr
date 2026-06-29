@@ -32,9 +32,6 @@ CREATE INDEX IF NOT EXISTS idx_trajectories_device
 CREATE INDEX IF NOT EXISTS idx_trajectories_created
     ON trajectories (created_at);
 
-CREATE INDEX IF NOT EXISTS idx_trajectories_instruction
-    ON trajectories (instruction_id);
-
 CREATE TABLE IF NOT EXISTS device_history (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id           TEXT NOT NULL,
@@ -86,6 +83,7 @@ class Database:
         # migrate existing DBs that lack the instruction_id column
         try:
             self._conn.execute("ALTER TABLE trajectories ADD COLUMN instruction_id TEXT DEFAULT ''")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_trajectories_instruction ON trajectories (instruction_id)")
             self._conn.commit()
         except sqlite3.OperationalError:
             pass

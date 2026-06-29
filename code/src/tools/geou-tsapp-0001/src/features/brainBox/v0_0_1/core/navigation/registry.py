@@ -243,28 +243,44 @@ class WebApiLatLngAlgorithm(NavigationAlgorithm):
     def _compute_conversion_params(
         cls, point_mapping: list[dict[str, float]]
     ) -> dict[str, float]:
-        """从参考点计算坐标转换参数 (线性拟合)."""
-        p0 = point_mapping[0]
-        p1 = point_mapping[1]
+        """
+        从参考点计算坐标转换参数。
 
-        lat0, lng0, alt0 = p0["lat"], p0["lng"], p0["alt"]
-        x0, y0, z0 = p0["x"], p0["y"], p0["z"]
-        lat1, lng1, alt1 = p1["lat"], p1["lng"], p1["alt"]
-        x1, y1, z1 = p1["x"], p1["y"], p1["z"]
+        水平面 (x-y ↔ lat-lng): 2D 仿射变换，支持旋转和非均匀缩放，最小二乘拟合。
+        垂直轴 (z ↔ alt): 简单线性映射 (scale + offset)。
+        """
+        n = len(point_mapping)
+        if n < 2:
+            raise ValueError("point_mapping 至少需要2个参考点")
 
-        dlat = lat1 - lat0
-        dlng = lng1 - lng0
-        dalt = alt1 - alt0
+        lats = [p["lat"] for p in point_mapping]
+        lngs = [p["lng"] for p in point_mapping]
+        alts = [p["alt"] for p in point_mapping]
+        xs   = [p["x"]   for p in point_mapping]
+        ys   = [p["y"]   for p in point_mapping]
+        zs   = [p["z"]   for p in point_mapping]
 
-        if abs(dlat) < 1e-10 or abs(dlng) < 1e-10 or abs(dalt) < 1e-10:
-            raise ValueError("参考点之间的纬度、经度、高度差值均不能为0")
+        # --- 水平面 2D 仿射:  x = a*lat + b*lng + c  ---
+        a, b, c = cls._solve_affine_2d(lats, lngs, xs)
+        # --- 水平面 2D 仿射:  y = d*lat + e*lng + f  ---
+        d, e, f = cls._solve_affine_2d(lats, lngs, ys)
+
+        # --- 垂直轴:  z = g*alt + h  ---
+        g, h = cls._solve_linear(alts, zs)
+
+        # 仿射矩阵 [[a,b],[d,e]] 的行列式，用于逆变换
+        det = a * e - b * d
+        if abs(det) < 1e-12:
+            raise ValueError(
+                "仿射矩阵奇异 (det≈0)，请检查 point_mapping 参考点是否共线或重复"
+            )
 
         return {
-            "lat0": lat0, "lng0": lng0, "alt0": alt0,
-            "x0": x0, "y0": y0, "z0": z0,
-            "lat_scale": (x1 - x0) / dlat,
-            "lng_scale": (y1 - y0) / dlng,
-            "alt_scale": (z1 - z0) / dalt,
+            "a": a, "b": b, "c": c,
+            "d": d, "e": e, "f": f,
+            "g": g, "h": h,
+            "inv_a":  e / det, "inv_b": -b / det,
+            "inv_d": -d / det, "inv_e":  a / det,
         }
 
     @classmethod
@@ -278,9 +294,9 @@ class WebApiLatLngAlgorithm(NavigationAlgorithm):
         lat = position.get("latitude", 0.0)
         lng = position.get("longitude", 0.0)
         alt = position.get("altitude", 0.0)
-        x = c["x0"] + (lat - c["lat0"]) * c["lat_scale"]
-        y = c["y0"] + (lng - c["lng0"]) * c["lng_scale"]
-        z = c["z0"] + (alt - c["alt0"]) * c["alt_scale"]
+        x = c["a"] * lat + c["b"] * lng + c["c"]
+        y = c["d"] * lat + c["e"] * lng + c["f"]
+        z = c["g"] * alt + c["h"]
         return {"x": round(x, 6), "y": round(y, 6), "z": round(z, 6)}
 
     @classmethod
@@ -291,14 +307,84 @@ class WebApiLatLngAlgorithm(NavigationAlgorithm):
     ) -> dict[str, float]:
         """API 内部 x/y/z → 经纬度 + 海拔."""
         c = cls._compute_conversion_params(point_mapping)
-        lat = c["lat0"] + (xyz["x"] - c["x0"]) / c["lat_scale"]
-        lng = c["lng0"] + (xyz["y"] - c["y0"]) / c["lng_scale"]
-        alt = c["alt0"] + (xyz["z"] - c["z0"]) / c["alt_scale"]
+        x_off = xyz["x"] - c["c"]
+        y_off = xyz["y"] - c["f"]
+        lat = c["inv_a"] * x_off + c["inv_b"] * y_off
+        lng = c["inv_d"] * x_off + c["inv_e"] * y_off
+        alt = (xyz["z"] - c["h"]) / c["g"] if abs(c["g"]) > 1e-12 else 0.0
         return {
             "latitude": round(lat, 8),
             "longitude": round(lng, 8),
             "altitude": round(alt, 2),
         }
+
+    # ------------------------------------------------------------------
+    #  最小二乘工具 (无 numpy 依赖)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _solve_affine_2d(
+        u: list[float], v: list[float], w: list[float],
+    ) -> tuple[float, float, float]:
+        """
+        最小二乘解  w = A*u + B*v + C.
+
+        A^T A  [[A],[B],[C]] = A^T w,  其中 A 的第 i 行为 [u_i, v_i, 1].
+        """
+        n = len(u)
+        su   = sum(u)
+        sv   = sum(v)
+        sw   = sum(w)
+        suu  = sum(ui * ui for ui in u)
+        svv  = sum(vi * vi for vi in v)
+        suv  = sum(ui * vi for ui, vi in zip(u, v))
+        suw  = sum(ui * wi for ui, wi in zip(u, w))
+        svw  = sum(vi * wi for vi, wi in zip(v, w))
+
+        # A^T A = [[suu, suv, su ], [suv, svv, sv ], [su,  sv,  n ]]
+        # A^T w = [suw, svw, sw]^T
+        # 用 Cramer 法则解 3x3 线性方程组
+        m11, m12, m13 = suu, suv, su
+        m21, m22, m23 = suv, svv, sv
+        m31, m32, m33 = su,  sv,  float(n)
+
+        det = cls._det3(m11, m12, m13, m21, m22, m23, m31, m32, m33)
+        if abs(det) < 1e-12:
+            raise ValueError("参考点不足或共线，无法求解仿射变换")
+
+        A = cls._det3(suw, m12, m13, svw, m22, m23, sw, m32, m33) / det
+        B = cls._det3(m11, suw, m13, m21, svw, m23, m31, sw, m33) / det
+        C = cls._det3(m11, m12, suw, m21, m22, svw, m31, m32, sw) / det
+        return A, B, C
+
+    @staticmethod
+    def _solve_linear(
+        u: list[float], w: list[float],
+    ) -> tuple[float, float]:
+        """最小二乘解  w = G*u + H."""
+        n = len(u)
+        su  = sum(u)
+        sw  = sum(w)
+        suu = sum(ui * ui for ui in u)
+        suw = sum(ui * wi for ui, wi in zip(u, w))
+        denom = n * suu - su * su
+        if abs(denom) < 1e-12:
+            raise ValueError("垂直轴参考点不足")
+        G = (n * suw - su * sw) / denom
+        H = (suu * sw - su * suw) / denom
+        return G, H
+
+    @staticmethod
+    def _det3(
+        a11, a12, a13,
+        a21, a22, a23,
+        a31, a32, a33,
+    ) -> float:
+        return (
+            a11 * (a22 * a33 - a23 * a32)
+          - a12 * (a21 * a33 - a23 * a31)
+          + a13 * (a21 * a32 - a22 * a31)
+        )
 
     # ------------------------------------------------------------------
     #  Fast Planner API 调用

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS trajectories (
     algorithm_name  TEXT NOT NULL,
     total_distance  REAL DEFAULT 0.0,
     estimated_time  REAL DEFAULT 0.0,
+    instruction_id  TEXT DEFAULT '',
     waypoints_json  TEXT NOT NULL,
     metadata_json   TEXT DEFAULT '{}',
     created_at      REAL NOT NULL,
@@ -79,6 +80,13 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON;")
         self._conn.executescript(_DDL)
         self._conn.commit()
+        # migrate existing DBs that lack the instruction_id column
+        try:
+            self._conn.execute("ALTER TABLE trajectories ADD COLUMN instruction_id TEXT DEFAULT ''")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_trajectories_instruction ON trajectories (instruction_id)")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
         logger.info("数据库已打开: %s", self._db_path)
 
     def close(self) -> None:
