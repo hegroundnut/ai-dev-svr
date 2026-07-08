@@ -250,8 +250,8 @@ class WebApiLatLngAlgorithm(NavigationAlgorithm):
         垂直轴 (z ↔ alt): 简单线性映射 (scale + offset)。
         """
         n = len(point_mapping)
-        if n < 2:
-            raise ValueError("point_mapping 至少需要2个参考点")
+        if n < 3:
+            raise ValueError("point_mapping 至少需要3个参考点用于2D仿射拟合")
 
         lats = [p["lat"] for p in point_mapping]
         lngs = [p["lng"] for p in point_mapping]
@@ -329,32 +329,32 @@ class WebApiLatLngAlgorithm(NavigationAlgorithm):
         """
         最小二乘解  w = A*u + B*v + C.
 
-        A^T A  [[A],[B],[C]] = A^T w,  其中 A 的第 i 行为 [u_i, v_i, 1].
+        先中心化 u/v 再求解，避免大坐标值导致的数值精度问题。
+        A^T A  [[A],[B],[C]] = A^T w,  其中 A 的第 i 行为 [u_i - mu, v_i - mv, 1].
         """
         n = len(u)
-        su   = sum(u)
-        sv   = sum(v)
-        sw   = sum(w)
-        suu  = sum(ui * ui for ui in u)
-        svv  = sum(vi * vi for vi in v)
-        suv  = sum(ui * vi for ui, vi in zip(u, v))
-        suw  = sum(ui * wi for ui, wi in zip(u, w))
-        svw  = sum(vi * wi for vi, wi in zip(v, w))
+        mu = sum(u) / n
+        mv = sum(v) / n
 
-        # A^T A = [[suu, suv, su ], [suv, svv, sv ], [su,  sv,  n ]]
-        # A^T w = [suw, svw, sw]^T
-        # 用 Cramer 法则解 3x3 线性方程组
-        m11, m12, m13 = suu, suv, su
-        m21, m22, m23 = suv, svv, sv
-        m31, m32, m33 = su,  sv,  float(n)
+        uc = [ui - mu for ui in u]
+        vc = [vi - mv for vi in v]
 
-        det = cls._det3(m11, m12, m13, m21, m22, m23, m31, m32, m33)
-        if abs(det) < 1e-12:
+        suu = sum(ui * ui for ui in uc)
+        svv = sum(vi * vi for vi in vc)
+        suv = sum(ui * vi for ui, vi in zip(uc, vc))
+        suw = sum(ui * wi for ui, wi in zip(uc, w))
+        svw = sum(vi * wi for vi, wi in zip(vc, w))
+        sw  = sum(w)
+
+        # A^T A = [[suu, suv, 0 ], [suv, svv, 0 ], [0,   0,   n ]]
+        # 中心化后 su=0, sv=0, 矩阵变为分块对角，解耦为 2x2 + 1x1
+        det2 = suu * svv - suv * suv
+        if abs(det2) < 1e-12:
             raise ValueError("参考点不足或共线，无法求解仿射变换")
 
-        A = cls._det3(suw, m12, m13, svw, m22, m23, sw, m32, m33) / det
-        B = cls._det3(m11, suw, m13, m21, svw, m23, m31, sw, m33) / det
-        C = cls._det3(m11, m12, suw, m21, m22, svw, m31, m32, sw) / det
+        A = (svv * suw - suv * svw) / det2
+        B = (suu * svw - suv * suw) / det2
+        C = sw / n - A * mu - B * mv  # 还原到原始坐标系
         return A, B, C
 
     @classmethod
