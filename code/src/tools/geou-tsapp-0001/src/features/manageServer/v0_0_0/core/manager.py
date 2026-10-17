@@ -12,6 +12,8 @@ from models import (
     NavigationStatus,
 )
 from config.settings import settings
+from storage.database import TaskDatabase
+from storage.simplify import simplify_trajectory_dict
 from .heartbeat import HeartbeatMonitor
 from .registry import BrainBoxRegistry
 
@@ -31,6 +33,12 @@ class EdgeManager:
     - 管理无人机设备表 (由类脑盒子上报，绑定到对应 brain_box)
     - 通过 WebSocket 转发指令到类脑盒子
     - 接收并存储轨迹上报
+
+    存储策略:
+    - 导航任务/轨迹全部持久化到 SQLite（storage.database.TaskDatabase），
+      内存不常驻任务数据，不随任务量增长；
+    - 轨迹入库前统一做道格拉斯-普克抽稀压缩（storage.simplify）；
+    - 盒子/设备注册表为实时热数据，仍保留在内存（重启后由心跳自动重建）。
     """
 
     _instance = None
@@ -56,7 +64,9 @@ class EdgeManager:
         self._lock_internal = threading.RLock()
 
         self._registry = BrainBoxRegistry()
-        self._tasks: Dict[str, NavigationTask] = {}
+        # 任务全部落库（SQLite），内存不常驻
+        self._db = TaskDatabase(db_path=settings.db_path)
+        self._db.open()
 
         self._ws_manager = ws_manager
         self._request_timeout = settings.request_timeout
@@ -147,7 +157,7 @@ class EdgeManager:
     # ==================================================================
 
     def receive_trajectory_report(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """接收导航轨迹上报"""
+        """接收导航轨迹上报（轨迹抽稀压缩后写入任务数据库）"""
         box_id = params.get("box_id", "")
         trajectory = params.get("trajectory", {})
 
@@ -160,25 +170,31 @@ class EdgeManager:
             trajectory_id = trajectory.get("trajectory_id", "")
             device_id = trajectory.get("device_id", "")
 
-            matched = False
-            for task in self._tasks.values():
-                if task.trajectory_id == trajectory_id and task.status == NavigationStatus.EXECUTING:
-                    task.result = trajectory
-                    matched = True
-                    break
+            # 入库前抽稀压缩，防止长轨迹占用过多存储
+            trajectory = simplify_trajectory_dict(
+                trajectory, epsilon_m=settings.trajectory_epsilon
+            )
 
-            if not matched:
-                for task in self._tasks.values():
-                    if (
-                        task.box_id == box_id
-                        and task.device_id == device_id
-                        and task.status in (NavigationStatus.PENDING, NavigationStatus.EXECUTING)
-                    ):
-                        task.trajectory_id = trajectory_id
-                        task.status = NavigationStatus.EXECUTING
-                        task.result = trajectory
-                        matched = True
-                        break
+            matched = False
+            task = self._db.find_by_trajectory(
+                trajectory_id, statuses=[NavigationStatus.EXECUTING]
+            )
+            if task:
+                self._db.update_task(task.task_id, result=trajectory)
+                matched = True
+            else:
+                task = self._db.find_by_box_device(
+                    box_id, device_id,
+                    statuses=[NavigationStatus.PENDING, NavigationStatus.EXECUTING],
+                )
+                if task:
+                    self._db.update_task(
+                        task.task_id,
+                        status=NavigationStatus.EXECUTING,
+                        trajectory_id=trajectory_id,
+                        result=trajectory,
+                    )
+                    matched = True
 
             logger.info(
                 "Trajectory report received: box=%s trajectory=%s device=%s matched=%s",
@@ -280,6 +296,12 @@ class EdgeManager:
             "device_id": device_id, "command": command,
         })
 
+    def forward_get_modes(self, box_id: str, device_id: str) -> Dict[str, Any]:
+        """通过 WS 查询无人机可用飞行模式列表（供 send_command set_mode 使用）"""
+        return self._send_command_to_box(box_id, "modes", {
+            "device_id": device_id,
+        })
+
     # ==================================================================
     #  导航任务
     # ==================================================================
@@ -317,7 +339,7 @@ class EdgeManager:
                 parameters=parameters,
                 status=NavigationStatus.PENDING,
             )
-            self._tasks[task.task_id] = task
+            self._db.save_task(task)
 
         def _forward():
             payload = {
@@ -331,12 +353,22 @@ class EdgeManager:
             with self._lock_internal:
                 if result.get("code", -1) == 0:
                     data = result.get("data", {})
-                    task.trajectory_id = data.get("trajectory_id")
-                    task.status = NavigationStatus.EXECUTING
-                    task.result = data
+                    # 轨迹结果入库前抽稀压缩（无 waypoints 时原样保留）
+                    data = simplify_trajectory_dict(
+                        data, epsilon_m=settings.trajectory_epsilon
+                    )
+                    self._db.update_task(
+                        task.task_id,
+                        status=NavigationStatus.EXECUTING,
+                        trajectory_id=data.get("trajectory_id"),
+                        result=data,
+                    )
                 else:
-                    task.status = NavigationStatus.FAILED
-                    task.result = result
+                    self._db.update_task(
+                        task.task_id,
+                        status=NavigationStatus.FAILED,
+                        result=result,
+                    )
             logger.info(
                 "Navigation instruction forwarded: task=%s box=%s device=%s code=%s",
                 task.task_id, box_id, device_id, result.get("code", -1),
@@ -352,7 +384,7 @@ class EdgeManager:
         return {"code": 0, "msg": "success", "data": task.to_dict()}
 
     def execute_trajectory(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """通过 WS 转发轨迹执行指令，成功后更新任务状态"""
+        """通过 WS 转发轨迹执行指令，成功后更新任务状态（数据库）"""
         box_id = params.get("box_id", "")
         trajectory_id = params.get("trajectory_id", "")
         result = self._send_command_to_box(box_id, "execute", {
@@ -360,25 +392,45 @@ class EdgeManager:
         })
         if result.get("code", -1) == 0:
             with self._lock_internal:
-                for task in self._tasks.values():
-                    if task.trajectory_id == trajectory_id and task.status == NavigationStatus.EXECUTING:
-                        task.status = NavigationStatus.COMPLETED
-                        task.completed_at = time.time()
-                        logger.info("Task %s completed via execute_trajectory", task.task_id)
-                        break
+                task = self._db.find_by_trajectory(
+                    trajectory_id, statuses=[NavigationStatus.EXECUTING]
+                )
+                if task:
+                    self._db.update_task(
+                        task.task_id,
+                        status=NavigationStatus.COMPLETED,
+                        completed_at=time.time(),
+                    )
+                    logger.info("Task %s completed via execute_trajectory", task.task_id)
         return result
 
-    def list_tasks(self, box_id: str = "all", instruction_id: str = "") -> Dict[str, Any]:
-        """查询导航任务列表（instruction_id 非空时转发到 brainBox 筛选）"""
+    def list_tasks(self, box_id: str = "", instruction_id: str = "") -> Dict[str, Any]:
+        """查询导航任务列表（数据库存储）.
+
+        - instruction_id 非空时转发到 brainBox 筛选（历史任务在盒子侧）；
+        - 否则必须指定 box_id：返回该盒子的全部任务；
+          未带 box_id（或传 'all'）时只返回最新创建的一条任务。
+        """
         if instruction_id:
             return self._list_tasks_from_boxes(box_id, instruction_id)
 
         with self._lock_internal:
-            if box_id != "all" and not self._registry.box_exists(box_id):
+            if not box_id or box_id == "all":
+                # 未指定 box_id：只返回最新创建的一条
+                task = self._db.latest_task()
+                tasks = [task] if task else []
+                return {
+                    "code": 0,
+                    "msg": "success (未指定 box_id，仅返回最新一条)",
+                    "data": {
+                        "total": len(tasks),
+                        "tasks": [t.to_dict() for t in tasks],
+                    },
+                }
+
+            if not self._registry.box_exists(box_id):
                 return {"code": -1, "msg": f"类脑盒子 {box_id} 不存在", "data": {}}
-            tasks = list(self._tasks.values())
-            if box_id != "all":
-                tasks = [t for t in tasks if t.box_id == box_id]
+            tasks = self._db.list_tasks(box_id=box_id)
             return {
                 "code": 0,
                 "msg": "success",
@@ -391,7 +443,7 @@ class EdgeManager:
     def _list_tasks_from_boxes(self, box_id: str, instruction_id: str) -> Dict[str, Any]:
         """向 brainBox 转发 list_tasks 请求，由 brainBox 按 instruction_id 筛选."""
         all_tasks: List[Dict[str, Any]] = []
-        if box_id != "all":
+        if box_id and box_id != "all":
             boxes_to_query = [box_id]
         else:
             boxes_to_query = [b.box_id for b in self._registry.get_all_boxes()]
@@ -419,12 +471,11 @@ class EdgeManager:
         }
 
     def get_task_info(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """获取任务详情"""
-        with self._lock_internal:
-            task = self._tasks.get(task_id)
-            if not task:
-                return None
-            return task.to_dict()
+        """获取任务详情（数据库查询）"""
+        task = self._db.get_task(task_id)
+        if not task:
+            return None
+        return task.to_dict()
 
     # ==================================================================
     #  状态管理
@@ -444,4 +495,5 @@ class EdgeManager:
 
     def shutdown(self) -> None:
         self._heartbeat.stop()
+        self._db.close()
         logger.info("EdgeManager shutdown complete")

@@ -140,11 +140,15 @@ class Database:
         )
         self.conn.commit()
 
-    def mark_trajectory_executed(self, trajectory_id: str) -> None:
-        """将轨迹标记为已执行."""
+    def mark_trajectory_executed(
+        self, trajectory_id: str, status: str = "executed"
+    ) -> None:
+        """将轨迹标记为已执行（status 可为 'executed' 或 'failed'）."""
+        if status not in ("executed", "failed"):
+            status = "executed"
         self.conn.execute(
-            "UPDATE trajectories SET status='executed', executed_at=? WHERE trajectory_id=?",
-            (time.time(), trajectory_id),
+            "UPDATE trajectories SET status=?, executed_at=? WHERE trajectory_id=?",
+            (status, time.time(), trajectory_id),
         )
         self.conn.commit()
 

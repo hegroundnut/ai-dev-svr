@@ -1,4 +1,16 @@
-"""MAVLink 消息解析 — 纯数据转换函数，无副作用."""
+"""MAVLink 消息解析 — 纯数据转换函数，无副作用.
+
+设备 ID 分配规则
+----------------
+- 连接通道带有显式 label（connect_drone 传入或配置文件指定）时，
+  设备 ID 直接使用 **label 原文**；
+- 无 label 时，设备 ID 为 ``{box_id}_{sysid}``（在原有 sysid 逻辑上
+  额外加入盒子 ID，避免多盒子场景下全局冲突）；
+- 同一 label 通道下出现多台不同 sysid 的无人机时，后续设备追加
+  ``_{sysid}`` 后缀以避免 ID 冲突；
+- MAVLink sysid 始终保存在 ``metadata["sysid"]`` 中，发送指令时从
+  metadata 读取，不再依赖设备 ID 字符串反解。
+"""
 
 from __future__ import annotations
 
@@ -31,11 +43,46 @@ def parse_ip(connection_string: str) -> str:
     return ""
 
 
+def make_device_id(
+    sys_id: int,
+    box_id: str,
+    explicit_label: str,
+    devices: dict[str, DeviceInfo],
+) -> str:
+    """按分配规则生成设备 ID（label 优先，无 label 用 box_id + sysid）."""
+    if explicit_label:
+        base_id = explicit_label
+    elif box_id:
+        base_id = f"{box_id}_{sys_id}"
+    else:
+        base_id = f"drone_{sys_id}"
+
+    # 同一 label 通道下多台无人机时，追加 sysid 后缀避免冲突
+    candidate = base_id
+    existing = devices.get(candidate)
+    if existing is not None and existing.metadata.get("sysid") not in (None, sys_id):
+        candidate = f"{base_id}_{sys_id}"
+    return candidate
+
+
+def resolve_device_id(devices: dict[str, DeviceInfo], sys_id: int) -> str | None:
+    """根据 MAVLink sysid 查找已注册设备的 ID（读取 metadata['sysid']）."""
+    for device_id, device in devices.items():
+        if device.metadata.get("sysid") == sys_id:
+            return device_id
+    return None
+
+
 def process_heartbeat(
-    msg: Any, devices: dict[str, DeviceInfo], channel_label: str
+    msg: Any,
+    devices: dict[str, DeviceInfo],
+    channel_label: str,
+    box_id: str = "",
+    explicit_label: str = "",
 ) -> None:
+    """处理心跳消息 (HEARTBEAT)，按 label/box_id 规则分配设备 ID."""
     sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
+    device_id = make_device_id(sys_id, box_id, explicit_label, devices)
 
     try:
         from pymavlink import mavutil  # noqa: PLC0415
@@ -52,6 +99,7 @@ def process_heartbeat(
             protocol="mavlink",
             status=DeviceStatus.ONLINE,
             metadata={
+                "sysid": sys_id,
                 "autopilot": msg.autopilot,
                 "mav_type": msg.type,
                 "system_status": msg.system_status,
@@ -61,8 +109,9 @@ def process_heartbeat(
             },
         )
         logger.info(
-            "发现新无人机: %s (type=%s, 通道=%s)",
+            "发现新无人机: %s (sysid=%s, type=%s, 通道=%s)",
             device_id,
+            sys_id,
             msg.type,
             channel_label,
         )
@@ -70,6 +119,7 @@ def process_heartbeat(
     device = devices[device_id]
     device.last_heartbeat = time.time()
     device.status = DeviceStatus.ONLINE
+    device.metadata["sysid"] = sys_id
     device.metadata["system_status"] = msg.system_status
     device.metadata["flight_mode"] = mode
     device.metadata["arm_state"] = arm_state
@@ -77,9 +127,8 @@ def process_heartbeat(
 
 def process_position(msg: Any, devices: dict[str, DeviceInfo]) -> None:
     """处理全球位置消息 (GLOBAL_POSITION_INT)."""
-    sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
-    device = devices.get(device_id)
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
     if device:
         device.position = {
             "latitude": msg.lat / 1e7,
@@ -92,9 +141,8 @@ def process_position(msg: Any, devices: dict[str, DeviceInfo]) -> None:
 
 def process_attitude(msg: Any, devices: dict[str, DeviceInfo]) -> None:
     """处理姿态消息 (ATTITUDE) — 滚转/俯仰/偏航."""
-    sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
-    device = devices.get(device_id)
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
     if device:
         device.metadata["attitude"] = {
             "roll": round(msg.roll, 4),
@@ -108,9 +156,8 @@ def process_attitude(msg: Any, devices: dict[str, DeviceInfo]) -> None:
 
 def process_vfr_hud(msg: Any, devices: dict[str, DeviceInfo]) -> None:
     """处理速度/油门消息 (VFR_HUD) — 空速/地速/油门."""
-    sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
-    device = devices.get(device_id)
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
     if device:
         device.metadata["velocity"] = {
             "airspeed": round(msg.airspeed, 2),
@@ -122,9 +169,8 @@ def process_vfr_hud(msg: Any, devices: dict[str, DeviceInfo]) -> None:
 
 def process_battery(msg: Any, devices: dict[str, DeviceInfo]) -> None:
     """处理电池状态消息 (BATTERY_STATUS) — 电压/电流/电量."""
-    sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
-    device = devices.get(device_id)
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
     if device:
         voltage = msg.voltages[0] / 1000.0 if msg.voltages[0] != 0xFFFF else 0.0
         current = msg.current_battery / 100.0 if msg.current_battery != -1 else 0.0
@@ -137,9 +183,8 @@ def process_battery(msg: Any, devices: dict[str, DeviceInfo]) -> None:
 
 def process_sys_status(msg: Any, devices: dict[str, DeviceInfo]) -> None:
     """处理系统状态消息 (SYS_STATUS) — CPU 占用/传感器健康."""
-    sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
-    device = devices.get(device_id)
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
     if device:
         device.metadata["sys_status"] = {
             "cpu_load": round(msg.load / 10.0, 1),
@@ -151,9 +196,8 @@ def process_sys_status(msg: Any, devices: dict[str, DeviceInfo]) -> None:
 
 def process_raw_imu(msg: Any, devices: dict[str, DeviceInfo]) -> None:
     """处理 IMU 原始数据 (RAW_IMU) — 加速度/陀螺仪/罗盘."""
-    sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
-    device = devices.get(device_id)
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
     if device:
         device.metadata["imu"] = {
             "xacc": msg.xacc,
@@ -170,9 +214,8 @@ def process_raw_imu(msg: Any, devices: dict[str, DeviceInfo]) -> None:
 
 def process_scaled_pressure(msg: Any, devices: dict[str, DeviceInfo]) -> None:
     """处理气压计消息 (SCALED_PRESSURE) — 气压/温度."""
-    sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
-    device = devices.get(device_id)
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
     if device:
         device.metadata["barometer"] = {
             "press_abs": round(msg.press_abs, 3),
@@ -183,9 +226,8 @@ def process_scaled_pressure(msg: Any, devices: dict[str, DeviceInfo]) -> None:
 
 def process_gps_raw(msg: Any, devices: dict[str, DeviceInfo]) -> None:
     """处理 GPS 原始数据 (GPS_RAW_INT) — 经纬度/卫星数."""
-    sys_id = msg.get_srcSystem()
-    device_id = f"drone_{sys_id}"
-    device = devices.get(device_id)
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
     if device:
         device.metadata["gps"] = {
             "latitude": msg.lat / 1e7,

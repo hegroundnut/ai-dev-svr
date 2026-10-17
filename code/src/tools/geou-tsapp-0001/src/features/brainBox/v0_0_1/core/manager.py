@@ -40,7 +40,7 @@ class BrainBoxManager:
         self._database.open()
 
         self._protocol_registry = ProtocolRegistry()
-        self._mavlink = MAVLinkProtocol(self._settings.mavlink)
+        self._mavlink = MAVLinkProtocol(self._settings.mavlink, box_id=self._settings.box_id)
         self._protocol_registry.register(self._mavlink)
 
         self._algorithm_registry = AlgorithmRegistry()
@@ -72,6 +72,7 @@ class BrainBoxManager:
             drone_manager=self._drone_manager,
             protocol_registry=self._protocol_registry,
             database=self._database,
+            simplify_epsilon=self._settings.storage.trajectory_epsilon,
         )
 
         self._started = False
@@ -88,6 +89,7 @@ class BrainBoxManager:
             "scan": ("scan_drones", True, False),
             "query": ("query_drones", False, True),
             "command": ("send_command", True, True),
+            "modes": ("get_modes", True, True),
             "summary": ("drones_summary", False, False),
             "instruction": ("navigation_instruction", True, True),
             "execute": ("execute_trajectory", True, True),
@@ -184,6 +186,16 @@ class BrainBoxManager:
         device_id = params["device_id"]
         command = params["command"]
         result = await self._drone_manager.send_command(device_id, command)
+        if result.get("success", False):
+            return {"code": 0, "msg": "success", "data": result}
+        return {"code": -1, "msg": result.get("error", ""), "data": result}
+
+    async def get_modes(self, params: dict[str, Any]) -> dict[str, Any]:
+        """查询无人机可用飞行模式列表（供 set_mode 指令使用）."""
+        device_id = params.get("device_id", "")
+        if not device_id:
+            return {"code": -1, "msg": "缺少必要参数: device_id", "data": {}}
+        result = await self._mavlink.get_available_modes(device_id)
         if result.get("success", False):
             return {"code": 0, "msg": "success", "data": result}
         return {"code": -1, "msg": result.get("error", ""), "data": result}

@@ -40,6 +40,13 @@ logger = logging.getLogger("brainBox.core.mavlink")
 
 _MAX_SIMULATED_DRONES = 3
 
+# 无真实连接时返回的常见 ArduCopter 飞行模式（仅模拟调试用）
+_SIMULATED_MODES = (
+    "STABILIZE", "ACRO", "ALT_HOLD", "AUTO", "GUIDED", "LOITER",
+    "RTL", "LAND", "POSHOLD", "DRIFT", "SPORT", "FLIP",
+    "AUTOTUNE", "GUIDED_NOGPS", "SMART_RTL",
+)
+
 
 class _MAVLinkChannel:
     """单个 MAVLink 连接通道（内部使用）.
@@ -54,10 +61,12 @@ class _MAVLinkChannel:
         system_id: int,
         component_id: int,
         reconnect: ReconnectConfig | None = None,
+        box_id: str = "",
     ) -> None:
         self.entry = entry
         self.system_id = system_id
         self.component_id = component_id
+        self.box_id = box_id
         self.connection: Any = None
         self.simulated = False
         self._running = False
@@ -183,7 +192,11 @@ class _MAVLinkChannel:
                 self._addr_map[sys_id] = self.connection.last_address
 
             if msg_type == "HEARTBEAT":
-                process_heartbeat(msg, devices, self.label)
+                process_heartbeat(
+                    msg, devices, self.label,
+                    box_id=self.box_id,
+                    explicit_label=self.entry.label,
+                )
             elif msg_type == "GLOBAL_POSITION_INT":
                 process_position(msg, devices)
             elif msg_type == "ATTITUDE":
@@ -277,9 +290,9 @@ class _MAVLinkChannel:
     ) -> None:
         """模拟心跳循环（pymavlink 不可用时）."""
         sim_id = 0
-        prefix = self.label.replace(" ", "_")
+        prefix = (self.entry.label or self.box_id or "box").replace(" ", "_")
         while self._running:
-            sim_id_str = f"drone_sim_{prefix}_{sim_id}"
+            sim_id_str = f"sim_{prefix}_{sim_id}"
             if sim_id_str not in devices and sim_id < _MAX_SIMULATED_DRONES:
                 devices[sim_id_str] = DeviceInfo(
                     device_id=sim_id_str,
@@ -295,6 +308,7 @@ class _MAVLinkChannel:
                         "altitude": 100.0 + sim_id * 10,
                     },
                     metadata={
+                        "sysid": None,
                         "autopilot": "simulated",
                         "mav_type": "quadrotor",
                         "system_status": "active",
@@ -338,8 +352,9 @@ class MAVLinkProtocol(DeviceProtocol):
     - 无人机:   开放 TCP 5760 端口 → 等待连接
     """
 
-    def __init__(self, config: MAVLinkConfig) -> None:
+    def __init__(self, config: MAVLinkConfig, box_id: str = "") -> None:
         self._config = config
+        self._box_id = box_id
         self._devices: dict[str, DeviceInfo] = {}
         self._channels: list[_MAVLinkChannel] = []
         # device_id → channel label 映射，用于 TCP 主动连接的断开管理
@@ -363,6 +378,7 @@ class MAVLinkProtocol(DeviceProtocol):
                 system_id=self._config.system_id,
                 component_id=self._config.component_id,
                 reconnect=self._config.reconnect,
+                box_id=self._box_id,
             )
             try:
                 await channel.open(self._devices)
@@ -475,6 +491,7 @@ class MAVLinkProtocol(DeviceProtocol):
             system_id=self._config.system_id,
             component_id=self._config.component_id,
             reconnect=self._config.reconnect,
+            box_id=self._box_id,
         )
         try:
             await channel.open(self._devices)
@@ -589,7 +606,57 @@ class MAVLinkProtocol(DeviceProtocol):
 
     @staticmethod
     def _get_target_system(device: DeviceInfo) -> int:
-        return int(device.device_id.split("_")[1])
+        """从设备 metadata 读取 MAVLink sysid（不再依赖设备 ID 字符串反解）."""
+        sysid = device.metadata.get("sysid")
+        if sysid is not None:
+            return int(sysid)
+        # 兼容旧格式 device_id（如 "drone_1"）
+        try:
+            return int(device.device_id.split("_")[-1])
+        except (IndexError, ValueError):
+            raise ValueError(
+                f"无法确定设备 {device.device_id} 的 MAVLink system id"
+            ) from None
+
+    async def get_available_modes(self, device_id: str) -> dict[str, Any]:
+        """查询指定无人机可用飞行模式列表（通过已建立连接的 mode_mapping 动态获取）."""
+        device = self._devices.get(device_id)
+        if not device:
+            return {"success": False, "error": f"设备 {device_id} 未找到"}
+
+        channel = self._find_channel_for_device(device)
+        current_mode = device.metadata.get("flight_mode", "")
+
+        if channel and channel.connection and not channel.simulated:
+            conn = channel.connection
+
+            def do_get() -> dict[str, int]:
+                return dict(conn.mode_mapping() or {})
+
+            try:
+                mapping = await asyncio.get_event_loop().run_in_executor(None, do_get)
+            except Exception as e:
+                logger.exception("获取设备 %s 模式列表失败", device_id)
+                return {"success": False, "error": f"获取模式列表失败: {e}"}
+            return {
+                "success": True,
+                "device_id": device_id,
+                "simulated": False,
+                "current_mode": current_mode,
+                "modes": sorted(mapping.keys()),
+                "mode_mapping": mapping,
+            }
+
+        # 无真实连接时返回常见 ArduCopter 模式列表（仅供调试参考）
+        return {
+            "success": True,
+            "device_id": device_id,
+            "simulated": True,
+            "current_mode": current_mode,
+            "modes": list(_SIMULATED_MODES),
+            "mode_mapping": {m: i for i, m in enumerate(_SIMULATED_MODES)},
+            "message": "无真实 MAVLink 连接，返回常见 ArduCopter 模式列表（模拟）",
+        }
 
     async def _send_mavlink_command(
         self,

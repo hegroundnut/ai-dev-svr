@@ -87,6 +87,8 @@ class StorageConfig:
 
     db_path: str = "data/brain_box.db"
     device_evict_timeout: float = 60.0
+    # 轨迹入库前的抽稀容差（米）：偏离原轨迹小于该值的中间点被丢弃
+    trajectory_epsilon: float = 0.5
 
 
 def _apply_section(data: dict[str, Any], key: str, target: Any) -> None:
@@ -169,6 +171,7 @@ class Settings:
             "BRAIN_BOX_LOG_DIR": ("logging", "log_dir"),
             "BRAIN_BOX_DB_PATH": ("storage", "db_path"),
             "BRAIN_BOX_DEVICE_EVICT_TIMEOUT": ("storage", "device_evict_timeout"),
+            "BRAIN_BOX_TRAJECTORY_EPSILON": ("storage", "trajectory_epsilon"),
         }
         for env_key, target in env_map.items():
             val = os.environ.get(env_key)

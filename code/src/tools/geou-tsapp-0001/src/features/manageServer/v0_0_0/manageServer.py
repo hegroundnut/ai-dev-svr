@@ -31,6 +31,7 @@
     scan_drones           转发扫描指令到类脑盒子
     query_drones          转发查询指令到类脑盒子
     send_command          转发控制指令到类脑盒子
+    get_modes             查询无人机可用飞行模式（供 send_command set_mode 使用）
 
   导航任务:
     navigation_instruction  下发导航指令（经由类脑盒子到无人机）
@@ -39,7 +40,7 @@
   设备查询:
     list_devices          获取所有已知无人机设备列表
     get_device_info       获取设备详细信息
-    list_tasks            查询导航任务列表
+    list_tasks            查询导航任务列表（须带 box_id，否则仅返回最新一条）
 
 --- params JSON 格式示例 ---
 
@@ -135,6 +136,12 @@ send_command:
     }
 }
 
+get_modes:
+{
+    "box_id": "brain_box_001",
+    "device_id": "drone_sim_0"
+}
+
 navigation_instruction:
 {
     "box_id": "brain_box_001",
@@ -171,7 +178,7 @@ get_device_info:
 
 list_tasks:
 {
-    "box_id": "all"
+    "box_id": "brain_box_001"
 }
 
 get_brain_box_status:
@@ -402,6 +409,16 @@ class CmanageServer:
         result = self._manager.forward_command(box_id, device_id, command)
         return self._handle_result("send_command", result)
 
+    def get_modes(self, params):
+        """查询无人机可用飞行模式列表（由类脑盒子通过已连接无人机动态获取）"""
+        box_id = params["box_id"]
+        device_id = params["device_id"]
+        self.progress_callback(
+            10, f"正在查询可用飞行模式 (brain_box={box_id}, device={device_id})"
+        )
+        result = self._manager.forward_get_modes(box_id, device_id)
+        return self._handle_result("get_modes", result)
+
     # ==================================================================
     #  导航任务
     # ==================================================================
@@ -446,8 +463,8 @@ class CmanageServer:
         return self._handle_result("get_device_info", result)
 
     def list_tasks(self, params):
-        """查询导航任务列表"""
-        box_id = params.get("box_id", "all")
+        """查询导航任务列表（须带 box_id；未带时仅返回最新创建的一条）"""
+        box_id = params.get("box_id", "")
         instruction_id = params.get("instruction_id", "")
         self.progress_callback(10, "正在查询任务列表")
         result = self._manager.list_tasks(box_id=box_id, instruction_id=instruction_id)

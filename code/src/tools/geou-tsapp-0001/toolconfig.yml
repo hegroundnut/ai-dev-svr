@@ -117,7 +117,15 @@ tools_sync_cfgs: {
                                 "params": {
                                     "box_id": "目标类脑盒子标识符",
                                     "device_id": "目标无人机设备 ID",
-                                    "command": "指令内容字典，如 {'type': 'takeoff', 'altitude': 50.0} 或 {'type': 'goto', 'latitude': 39.9, 'longitude': 116.4, 'altitude': 100.0} 或 {'type': 'set_mode', 'mode': 'GUIDED'}"
+                                    "command": "指令内容字典，如 {'type': 'takeoff', 'altitude': 50.0} 或 {'type': 'goto', 'latitude': 39.9, 'longitude': 116.4, 'altitude': 100.0} 或 {'type': 'set_mode', 'mode': 'GUIDED'}（可用模式先通过 get_modes 查询）"
+                                }
+                            },
+                            {
+                                "func_name": "get_modes",
+                                "func_desc": "查询无人机可用飞行模式列表（由类脑盒子通过已连接无人机的 mode_mapping 动态获取，供 send_command 的 set_mode 使用）",
+                                "params": {
+                                    "box_id": "目标类脑盒子标识符",
+                                    "device_id": "目标无人机设备 ID"
                                 }
                             },
                             {
@@ -157,10 +165,10 @@ tools_sync_cfgs: {
                             },
                             {
                                 "func_name": "list_tasks",
-                                "func_desc": "查询导航任务列表",
+                                "func_desc": "查询导航任务列表（任务存于数据库；须带 box_id 查询指定盒子，未带 box_id 时仅返回最新创建的一条）",
                                 "params": {
-                                    "box_id": "类脑盒子标识符，传 'all' 查询所有",
-                                    "instruction_id": "可选，根据id过滤",
+                                    "box_id": "类脑盒子标识符（建议必带；不带或传 'all' 时仅返回最新一条任务）",
+                                    "instruction_id": "可选，根据id过滤（该模式转发到类脑盒子查询历史任务）",
                                 }
                             }
                         ]

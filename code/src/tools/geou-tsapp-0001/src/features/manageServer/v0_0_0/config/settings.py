@@ -33,6 +33,11 @@ class Settings:
         self.data_dir = self.base_dir / "data"
         self.logs_dir = self.data_dir / "logs"
 
+        # 任务数据库（SQLite）：任务/轨迹全部落库，内存不常驻
+        self.db_path = self.data_dir / "manage_server.db"
+        # 轨迹入库前的抽稀容差（米）
+        self.trajectory_epsilon = 0.5
+
         self.heartbeat_check_interval_s = 10.0
         self.box_timeout_s = 30.0
         self.request_timeout = 10.0
@@ -68,6 +73,8 @@ class Settings:
             "base_dir": str(self.base_dir),
             "data_dir": str(self.data_dir),
             "logs_dir": str(self.logs_dir),
+            "db_path": str(self.db_path),
+            "trajectory_epsilon": self.trajectory_epsilon,
             "heartbeat_check_interval_s": self.heartbeat_check_interval_s,
             "box_timeout_s": self.box_timeout_s,
             "request_timeout": self.request_timeout,
