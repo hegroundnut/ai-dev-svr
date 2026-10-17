@@ -1,0 +1,1095 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "geou-tsapp-0001 manageServer & brainBox API",
+    "version": "0.0.1",
+    "description": "云—边—端无人机管控 API（Apifox 导入文档）\n\n架构：平台 HTTP → manageServer(:15000) ⇄ WebSocket(:15002) ⇄ brainBox(:15001) ⇄ MAVLink ⇄ 无人机\n\n本次更新要点：\n- 新增 `get_modes`：查询无人机可用飞行模式（由 brainBox 通过 pymavlink `mode_mapping()` 从真机动态获取，供 `send_command` 的 `set_mode` 使用；无真机连接时返回模拟模式列表并标注 `simulated: true`）\n- `list_tasks` 规则变更：任务已全量落库 SQLite；须带 `box_id` 查询指定盒子，未带（或传 `all`）时仅返回最新创建的一条\n- 所有轨迹入库前统一做 Douglas-Peucker 抽稀压缩（epsilon 默认 0.5m），坐标截断至 7 位小数\n- 无人机 device_id 分配规则：连接通道有 label → id 即 label 原文；无 label → `{box_id}_{sysid}`\n- brainBox HTTP 接口（get_config/update_config/status/protocols，端口 15001）本身无变更，一并收录便于联调\n\n通用响应信封：`{code, msg, data}`，code=0 成功、-1 失败。HTTP 层错误：404=subfunc 不存在，403=访问私有方法，400=缺少必要参数，500=内部错误。\n\n注意：brainBox 接口的 servers 为 http://localhost:15001（路径级 servers 覆盖），manageServer 为全局 http://localhost:15000。"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:15000",
+      "description": "manageServer（边缘服务器）"
+    },
+    {
+      "url": "http://{host}:{port}",
+      "description": "自定义地址",
+      "variables": {
+        "host": { "default": "localhost" },
+        "port": { "default": "15000" }
+      }
+    }
+  ],
+  "tags": [
+    { "name": "manageServer-盒子管理", "description": "类脑盒子集群管理" },
+    { "name": "manageServer-数据接收", "description": "brainBox → manageServer 上报" },
+    { "name": "manageServer-指令转发", "description": "manageServer → brainBox 指令" },
+    { "name": "manageServer-导航任务", "description": "导航指令下发与轨迹执行" },
+    { "name": "manageServer-查询", "description": "设备与任务查询（任务存于 SQLite）" },
+    { "name": "brainBox", "description": "类脑盒子本地 HTTP 接口（端口 15001）" }
+  ],
+  "paths": {
+    "/api/manageServer/CmanageServer/update_brain_box_meta": {
+      "post": {
+        "tags": ["manageServer-盒子管理"],
+        "summary": "更新类脑盒子元数据",
+        "description": "盒子通过 WS 自动发现，此接口仅更新元信息；盒子不存在时自动创建。",
+        "operationId": "update_brain_box_meta",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id"],
+                "properties": {
+                  "box_id": { "type": "string", "description": "类脑盒子唯一标识符" },
+                  "metadata": { "type": "object", "description": "自定义元数据", "additionalProperties": true }
+                }
+              },
+              "example": { "box_id": "brain_box_001", "metadata": { "location": "机房A" } }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0,
+                  "msg": "success",
+                  "data": {
+                    "box_id": "brain_box_001", "status": "offline", "last_heartbeat": 0,
+                    "drone_count": 0, "online_drone_count": 0, "ws_connected": false,
+                    "metadata": { "location": "机房A" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/blacklist_brain_box": {
+      "post": {
+        "tags": ["manageServer-盒子管理"],
+        "summary": "拉黑类脑盒子",
+        "description": "拉黑后断开其 WS 连接并阻止重连、拒收其心跳。",
+        "operationId": "blacklist_brain_box",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id"],
+                "properties": { "box_id": { "type": "string" } }
+              },
+              "example": { "box_id": "brain_box_001" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": {} }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/list_brain_boxes": {
+      "post": {
+        "tags": ["manageServer-盒子管理"],
+        "summary": "获取类脑盒子列表及状态",
+        "operationId": "list_brain_boxes",
+        "requestBody": {
+          "required": false,
+          "content": { "application/json": { "schema": { "type": "object" }, "example": {} } }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "total": 1,
+                    "brain_boxes": [{
+                      "box_id": "brain_box_001", "status": "online", "last_heartbeat": 1715340000.123,
+                      "drone_count": 3, "online_drone_count": 3, "ws_connected": true,
+                      "metadata": { "location": "机房A" }
+                    }]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/get_brain_box_status": {
+      "post": {
+        "tags": ["manageServer-盒子管理"],
+        "summary": "查询类脑盒子详细状态（远程调用）",
+        "description": "经 WS 转发到盒子的 status 接口，返回盒子系统状态、WS 连接、无人机汇总及可用算法/协议。",
+        "operationId": "get_brain_box_status",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id"],
+                "properties": { "box_id": { "type": "string" } }
+              },
+              "example": { "box_id": "brain_box_001" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "box_id": "brain_box_001", "ws_connected": true, "drone_count": 2, "online_count": 2 } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/heartbeat": {
+      "post": {
+        "tags": ["manageServer-数据接收"],
+        "summary": "接收类脑盒子心跳上报",
+        "description": "盒子经 WS 自动上报心跳，此 HTTP 接口作为备用。心跳可将 OFFLINE 盒子恢复为 ONLINE，并支持自动发现注册。",
+        "operationId": "heartbeat",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "timestamp": { "type": "number", "description": "Unix 秒" },
+                  "status": { "type": "string", "example": "running" },
+                  "drone_count": { "type": "integer" },
+                  "online_count": { "type": "integer" },
+                  "online_devices": { "type": "array", "description": "可选，在线设备简要信息", "items": { "type": "object" } },
+                  "ip_address": { "type": "string", "description": "可选，用于自动注册" },
+                  "port": { "type": "integer", "description": "可选，用于自动注册" }
+                }
+              },
+              "example": { "box_id": "brain_box_001", "timestamp": 1715340000.123, "status": "running", "drone_count": 3, "online_count": 3 }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "box_id": "brain_box_001", "status": "online", "last_heartbeat": 1715340000.123, "drone_count": 3, "online_drone_count": 3, "ws_connected": true, "metadata": {} } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/drone_report": {
+      "post": {
+        "tags": ["manageServer-数据接收"],
+        "summary": "接收无人机状态上报（由类脑盒子转发）",
+        "description": "device_id 规则：通道有 label → id 即 label 原文；无 label → `{box_id}_{sysid}`。metadata 含 attitude/velocity/battery/imu/barometer/gps/flight_mode/arm_state/sysid 等。",
+        "operationId": "drone_report",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "devices"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "timestamp": { "type": "number" },
+                  "devices": { "type": "array", "items": { "$ref": "#/components/schemas/DroneDevice" } }
+                }
+              },
+              "example": {
+                "box_id": "brain_box_001", "timestamp": 1715340000.123,
+                "devices": [{
+                  "device_id": "猎鹰", "device_type": "quadcopter", "protocol": "mavlink", "status": "online",
+                  "position": { "latitude": 39.9042, "longitude": 116.4074, "altitude": 100.0, "relative_alt": 80.0 },
+                  "metadata": { "sysid": 1, "flight_mode": "GUIDED", "arm_state": true, "battery": { "voltage": 22.4, "remaining": 87 } }
+                }]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "received": 1 } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/trajectory_report": {
+      "post": {
+        "tags": ["manageServer-数据接收"],
+        "summary": "接收导航轨迹上报（由类脑盒子转发）",
+        "description": "轨迹入库前自动抽稀压缩（Douglas-Peucker，epsilon 默认 0.5m），并按 trajectory_id / box+device 匹配到任务数据库中的任务。",
+        "operationId": "trajectory_report",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "trajectory"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "timestamp": { "type": "number" },
+                  "trajectory": { "$ref": "#/components/schemas/Trajectory" }
+                }
+              },
+              "example": {
+                "box_id": "brain_box_001", "timestamp": 1715340000.123,
+                "trajectory": {
+                  "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                  "device_id": "猎鹰", "algorithm_name": "simple_linear",
+                  "total_distance": 1287.45, "estimated_time": 160.93,
+                  "waypoints": [{ "latitude": 39.9042, "longitude": 116.4074, "altitude": 100.0, "speed": 8.0, "hold_time": 0.0 }]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/connect_drone": {
+      "post": {
+        "tags": ["manageServer-指令转发"],
+        "summary": "转发 TCP 连接无人机指令到指定类脑盒子",
+        "description": "label 决定设备 id：传 label 则 device_id 即 label 原文；不传则为 `{box_id}_{sysid}`。",
+        "operationId": "connect_drone",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "ip"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "ip": { "type": "string", "example": "192.168.43.1" },
+                  "port": { "type": "integer", "default": 5760 },
+                  "label": { "type": "string", "description": "可选，连接标签（有 label 时 device_id 即 label 原文）" }
+                }
+              },
+              "example": { "box_id": "brain_box_001", "ip": "192.168.43.1", "port": 5760, "label": "猎鹰" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "connected": true, "label": "猎鹰" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/disconnect_drone": {
+      "post": {
+        "tags": ["manageServer-指令转发"],
+        "summary": "转发断开无人机连接指令到指定类脑盒子",
+        "operationId": "disconnect_drone",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "device_id"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "device_id": { "type": "string" }
+                }
+              },
+              "example": { "box_id": "brain_box_001", "device_id": "猎鹰" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "disconnected": true } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/list_connections": {
+      "post": {
+        "tags": ["manageServer-指令转发"],
+        "summary": "转发查询 TCP 连接列表指令到指定类脑盒子",
+        "operationId": "list_connections",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id"],
+                "properties": { "box_id": { "type": "string" } }
+              },
+              "example": { "box_id": "brain_box_001" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "connections": [{ "label": "猎鹰", "connection_string": "tcp:192.168.43.1:5760", "connected": true }] } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/scan_drones": {
+      "post": {
+        "tags": ["manageServer-指令转发"],
+        "summary": "转发扫描指令到指定类脑盒子，触发无人机扫描",
+        "operationId": "scan_drones",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id"],
+                "properties": { "box_id": { "type": "string" } }
+              },
+              "example": { "box_id": "brain_box_001" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "devices": [] } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/query_drones": {
+      "post": {
+        "tags": ["manageServer-指令转发"],
+        "summary": "转发查询指令到指定类脑盒子，获取无人机详情",
+        "operationId": "query_drones",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "device_id": { "type": "string", "description": "可选，指定查询的设备 ID" },
+                  "status": { "type": "string", "description": "可选，按状态过滤" }
+                }
+              },
+              "example": { "box_id": "brain_box_001", "device_id": "猎鹰" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "devices": [] } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/send_command": {
+      "post": {
+        "tags": ["manageServer-指令转发"],
+        "summary": "转发控制指令到指定类脑盒子，操控目标无人机",
+        "description": "command.type 支持：arm / disarm / takeoff / land / goto / set_mode。\nset_mode 的可用模式请先通过 `get_modes` 查询（由真机 mode_mapping 动态决定）。\n注意：execute_trajectory 走任务上传（MISSION 协议），不会自动切 GUIDED/解锁/起飞，需先用本接口 set_mode + arm + takeoff。",
+        "operationId": "send_command",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "device_id", "command"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "device_id": { "type": "string" },
+                  "command": {
+                    "type": "object",
+                    "required": ["type"],
+                    "description": "指令内容字典",
+                    "properties": {
+                      "type": { "type": "string", "enum": ["arm", "disarm", "takeoff", "land", "goto", "set_mode"] },
+                      "altitude": { "type": "number", "description": "takeoff/goto 高度（米）" },
+                      "latitude": { "type": "number", "description": "goto 目标纬度" },
+                      "longitude": { "type": "number", "description": "goto 目标经度" },
+                      "mode": { "type": "string", "description": "set_mode 目标模式，如 GUIDED（先经 get_modes 查询）" }
+                    }
+                  }
+                }
+              },
+              "examples": {
+                "takeoff": {
+                  "summary": "起飞",
+                  "value": { "box_id": "brain_box_001", "device_id": "猎鹰", "command": { "type": "takeoff", "altitude": 50.0 } }
+                },
+                "goto": {
+                  "summary": "指点飞行",
+                  "value": { "box_id": "brain_box_001", "device_id": "猎鹰", "command": { "type": "goto", "latitude": 39.91, "longitude": 116.42, "altitude": 100.0 } }
+                },
+                "set_mode": {
+                  "summary": "切换飞行模式",
+                  "value": { "box_id": "brain_box_001", "device_id": "猎鹰", "command": { "type": "set_mode", "mode": "GUIDED" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "success": true, "command": "set_mode", "device_id": "猎鹰" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/get_modes": {
+      "post": {
+        "tags": ["manageServer-指令转发"],
+        "summary": "查询无人机可用飞行模式列表（新增）",
+        "description": "由类脑盒子通过已连接无人机的 pymavlink `mode_mapping()` 动态获取，供 `send_command` 的 `set_mode` 使用。\n无真机连接（模拟设备）时返回内置 ArduCopter 模式列表，且 `simulated: true`。",
+        "operationId": "get_modes",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "device_id"],
+                "properties": {
+                  "box_id": { "type": "string", "description": "目标类脑盒子标识符" },
+                  "device_id": { "type": "string", "description": "目标无人机设备 ID" }
+                }
+              },
+              "example": { "box_id": "brain_box_001", "device_id": "猎鹰" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "examples": {
+                  "真机": {
+                    "summary": "真机连接（mode_mapping 动态获取）",
+                    "value": {
+                      "code": 0, "msg": "success",
+                      "data": {
+                        "success": true, "device_id": "猎鹰", "simulated": false,
+                        "current_mode": "STABILIZE",
+                        "modes": ["ACRO", "ALT_HOLD", "AUTO", "GUIDED", "LAND", "LOITER", "POS_HOLD", "RTL", "STABILIZE"],
+                        "mode_mapping": { "STABILIZE": 0, "ACRO": 1, "ALT_HOLD": 2, "AUTO": 3, "GUIDED": 4, "LOITER": 5, "RTL": 6, "LAND": 9, "POS_HOLD": 16 }
+                      }
+                    }
+                  },
+                  "模拟": {
+                    "summary": "无真机连接（模拟降级列表）",
+                    "value": {
+                      "code": 0, "msg": "success",
+                      "data": {
+                        "success": true, "device_id": "sim_box_0", "simulated": true,
+                        "message": "设备无真机 MAVLink 连接，返回模拟模式列表",
+                        "current_mode": "STABILIZE",
+                        "modes": ["ACRO", "ALT_HOLD", "AUTO", "DRIFT", "FLIP", "GUIDED", "GUIDED_NOGPS", "LAND", "LOITER", "POSHOLD", "RTL", "SMART_RTL", "SPORT", "STABILIZE"],
+                        "mode_mapping": {}
+                      }
+                    }
+                  },
+                  "失败": {
+                    "summary": "设备不存在",
+                    "value": { "code": -1, "msg": "未找到设备: xxx", "data": { "success": false, "error": "未找到设备: xxx" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/navigation_instruction": {
+      "post": {
+        "tags": ["manageServer-导航任务"],
+        "summary": "下发导航指令（经由类脑盒子生成轨迹）",
+        "description": "创建任务记录（SQLite，status=pending）后立即返回，后台线程经 WS 转发到盒子；盒子生成轨迹（入库前抽稀）后任务转为 executing。\n注意：本接口只生成/下发轨迹，不自动执行飞行；执行需另调 execute_trajectory（任务上传，须手动 set_mode GUIDED + arm + takeoff）。",
+        "operationId": "navigation_instruction",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "instruction_id", "device_id", "target_position"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "instruction_id": { "type": "string", "description": "导航指令唯一 ID" },
+                  "device_id": { "type": "string" },
+                  "target_position": {
+                    "type": "object",
+                    "required": ["latitude", "longitude", "altitude"],
+                    "properties": {
+                      "latitude": { "type": "number" },
+                      "longitude": { "type": "number" },
+                      "altitude": { "type": "number" }
+                    }
+                  },
+                  "algorithm": { "type": "string", "default": "simple_linear", "description": "导航算法名称（另有 web_api_latlng 等）" },
+                  "parameters": { "type": "object", "description": "可选算法参数", "additionalProperties": true }
+                }
+              },
+              "example": {
+                "box_id": "brain_box_001", "instruction_id": "nav_20240510_001", "device_id": "猎鹰",
+                "target_position": { "latitude": 39.91, "longitude": 116.42, "altitude": 120.0 },
+                "algorithm": "simple_linear",
+                "parameters": { "step_count": 5, "speed": 8.0 }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功（立即返回 pending 任务，后台异步转发）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "task_id": "nav_a1b2c3d4e5f6", "instruction_id": "nav_20240510_001",
+                    "box_id": "brain_box_001", "device_id": "猎鹰",
+                    "target_position": { "latitude": 39.91, "longitude": 116.42, "altitude": 120.0 },
+                    "algorithm": "simple_linear", "parameters": { "step_count": 5, "speed": 8.0 },
+                    "status": "pending", "trajectory_id": null,
+                    "created_at": 1715340000.123, "completed_at": null, "result": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/execute_trajectory": {
+      "post": {
+        "tags": ["manageServer-导航任务"],
+        "summary": "转发轨迹执行指令到类脑盒子",
+        "description": "盒子将轨迹以 MAVLink 任务方式上传（mission_count + mission_item_int，非 goto）；成功后任务转 completed。\n不会自动切 GUIDED/解锁/起飞/MISSION_START，须先通过 send_command 手动完成。仅 pending 状态轨迹可执行。",
+        "operationId": "execute_trajectory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "trajectory_id"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "trajectory_id": { "type": "string", "description": "轨迹 ID（从导航指令响应/任务中获取）" }
+                }
+              },
+              "example": { "box_id": "brain_box_001", "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "executed": true } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/list_devices": {
+      "post": {
+        "tags": ["manageServer-查询"],
+        "summary": "获取所有已知无人机设备列表",
+        "operationId": "list_devices",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "box_id": { "type": "string", "description": "按盒子过滤，传 'all' 查询所有", "default": "all" }
+                }
+              },
+              "example": { "box_id": "all" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "total": 1,
+                    "devices": [{
+                      "device_id": "猎鹰", "box_id": "brain_box_001", "device_type": "quadcopter",
+                      "protocol": "mavlink", "status": "online", "last_heartbeat": 1715340000.123,
+                      "position": { "latitude": 39.9042, "longitude": 116.4074, "altitude": 100.0, "relative_alt": 80.0 },
+                      "metadata": { "sysid": 1, "flight_mode": "GUIDED", "arm_state": true }
+                    }]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/get_device_info": {
+      "post": {
+        "tags": ["manageServer-查询"],
+        "summary": "获取指定无人机设备的详细信息",
+        "operationId": "get_device_info",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "device_id"],
+                "properties": {
+                  "box_id": { "type": "string" },
+                  "device_id": { "type": "string" }
+                }
+              },
+              "example": { "box_id": "brain_box_001", "device_id": "猎鹰" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "device_id": "猎鹰", "box_id": "brain_box_001", "device_type": "quadcopter",
+                    "protocol": "mavlink", "status": "online", "last_heartbeat": 1715340000.123,
+                    "position": { "latitude": 39.9042, "longitude": 116.4074, "altitude": 100.0, "relative_alt": 80.0 },
+                    "metadata": { "sysid": 1, "flight_mode": "GUIDED", "arm_state": true, "battery": { "voltage": 22.4, "remaining": 87 } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/list_tasks": {
+      "post": {
+        "tags": ["manageServer-查询"],
+        "summary": "查询导航任务列表（规则已变更）",
+        "description": "任务存于 SQLite 数据库（内存不常驻）。\n- 带 `box_id`：返回该盒子的全部任务（按创建时间倒序）；盒子不存在返回 code=-1\n- 未带 `box_id`（或传 `all`）：仅返回最新创建的一条任务\n- 带 `instruction_id`：转发到类脑盒子按指令 ID 筛选历史任务（此模式可组合 box_id 指定单盒）",
+        "operationId": "list_tasks",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "box_id": { "type": "string", "description": "建议必带；不带或传 'all' 时仅返回最新一条任务" },
+                  "instruction_id": { "type": "string", "description": "可选，按指令 ID 过滤（转发到盒子查询历史任务）" }
+                }
+              },
+              "examples": {
+                "按盒子查询": {
+                  "summary": "带 box_id：返回该盒全部任务",
+                  "value": { "box_id": "brain_box_001" }
+                },
+                "最新一条": {
+                  "summary": "不带 box_id：仅返回最新创建的一条",
+                  "value": {}
+                },
+                "按指令过滤": {
+                  "summary": "带 instruction_id：转发盒子筛选",
+                  "value": { "box_id": "brain_box_001", "instruction_id": "nav_20240510_001" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "examples": {
+                  "按盒子": {
+                    "value": {
+                      "code": 0, "msg": "success",
+                      "data": {
+                        "total": 1,
+                        "tasks": [{
+                          "task_id": "nav_a1b2c3d4e5f6", "instruction_id": "nav_20240510_001",
+                          "box_id": "brain_box_001", "device_id": "猎鹰",
+                          "target_position": { "latitude": 39.91, "longitude": 116.42, "altitude": 120.0 },
+                          "algorithm": "simple_linear", "parameters": { "step_count": 5, "speed": 8.0 },
+                          "status": "completed", "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                          "created_at": 1715340000.123, "completed_at": 1715340060.456,
+                          "result": {
+                            "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                            "device_id": "猎鹰", "algorithm_name": "simple_linear",
+                            "total_distance": 1113.2, "estimated_time": 139.15,
+                            "waypoints": [
+                              { "latitude": 39.9, "longitude": 116.4, "altitude": 50.0, "speed": 8.0, "hold_time": 0.0 },
+                              { "latitude": 39.91, "longitude": 116.4, "altitude": 50.0, "speed": 8.0, "hold_time": 0.0 }
+                            ],
+                            "metadata": { "simplify": { "epsilon_m": 0.5, "raw_waypoint_count": 101, "simplified_waypoint_count": 2 } }
+                          }
+                        }]
+                      }
+                    }
+                  },
+                  "最新一条": {
+                    "value": {
+                      "code": 0, "msg": "success (未指定 box_id，仅返回最新一条)",
+                      "data": {
+                        "total": 1,
+                        "tasks": [{
+                          "task_id": "nav_b2c3d4e5f6a7", "instruction_id": "nav_20240510_002",
+                          "box_id": "brain_box_002", "device_id": "brain_box_002_7",
+                          "target_position": { "latitude": 39.92, "longitude": 116.43, "altitude": 80.0 },
+                          "algorithm": "simple_linear", "parameters": {},
+                          "status": "executing", "trajectory_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                          "created_at": 1715340100.0, "completed_at": null, "result": {}
+                        }]
+                      }
+                    }
+                  },
+                  "盒子不存在": {
+                    "value": { "code": -1, "msg": "类脑盒子 no_such_box 不存在", "data": {} }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/brainBox/CbrainBox/get_config": {
+      "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
+      "post": {
+        "tags": ["brainBox"],
+        "summary": "获取类脑盒子当前配置信息",
+        "description": "含边缘服务器地址、WebSocket 连接、MAVLink 连接、日志及存储配置（存储配置含轨迹抽稀容差 trajectory_epsilon）。",
+        "operationId": "brainbox_get_config",
+        "requestBody": {
+          "required": false,
+          "content": { "application/json": { "schema": { "type": "object" }, "example": {} } }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "box_id": "brain_box_001",
+                    "storage": { "db_path": "data/brain_box.db", "device_evict_timeout": 60.0, "trajectory_epsilon": 0.5 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/brainBox/CbrainBox/update_config": {
+      "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
+      "post": {
+        "tags": ["brainBox"],
+        "summary": "更新类脑盒子配置信息（支持部分更新）",
+        "operationId": "brainbox_update_config",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "box_id": { "type": "string", "description": "可选" },
+                  "edge": { "type": "object", "description": "可选，边缘服务器配置 {base_url, ws_url, heartbeat_interval, ...}" },
+                  "mavlink": { "type": "object", "description": "可选，MAVLink 通信配置 {connection_string, scan_interval, ...}" },
+                  "logging": { "type": "object", "description": "可选，日志配置 {level, log_dir, ...}" },
+                  "storage": {
+                    "type": "object",
+                    "description": "可选，存储配置",
+                    "properties": {
+                      "db_path": { "type": "string" },
+                      "device_evict_timeout": { "type": "number" },
+                      "trajectory_epsilon": { "type": "number", "description": "轨迹抽稀容差（米），默认 0.5" }
+                    }
+                  }
+                }
+              },
+              "example": { "storage": { "trajectory_epsilon": 0.8 } }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": {} }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/brainBox/CbrainBox/status": {
+      "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
+      "post": {
+        "tags": ["brainBox"],
+        "summary": "获取类脑盒子系统运行状态",
+        "description": "系统状态、WS 连接状态、无人机汇总及可用算法/协议。",
+        "operationId": "brainbox_status",
+        "requestBody": {
+          "required": false,
+          "content": { "application/json": { "schema": { "type": "object" }, "example": {} } }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "box_id": "brain_box_001", "ws_connected": true, "drone_count": 2, "online_count": 2, "algorithms": ["simple_linear", "web_api_latlng"] } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/brainBox/CbrainBox/protocols": {
+      "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
+      "post": {
+        "tags": ["brainBox"],
+        "summary": "获取已注册的通信协议列表",
+        "operationId": "brainbox_protocols",
+        "requestBody": {
+          "required": false,
+          "content": { "application/json": { "schema": { "type": "object" }, "example": {} } }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": { "code": 0, "msg": "success", "data": { "protocols": ["mavlink"] } }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Envelope": {
+        "type": "object",
+        "description": "统一响应信封",
+        "properties": {
+          "code": { "type": "integer", "description": "0=成功，-1=失败", "example": 0 },
+          "msg": { "type": "string", "example": "success" },
+          "data": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "BrainBoxNode": {
+        "type": "object",
+        "description": "类脑盒子节点",
+        "properties": {
+          "box_id": { "type": "string", "example": "brain_box_001" },
+          "status": { "type": "string", "enum": ["online", "offline"] },
+          "last_heartbeat": { "type": "number", "description": "Unix 秒" },
+          "drone_count": { "type": "integer" },
+          "online_drone_count": { "type": "integer" },
+          "ws_connected": { "type": "boolean" },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "DroneDevice": {
+        "type": "object",
+        "description": "无人机设备记录（device_id：有 label 用 label 原文，无 label 为 {box_id}_{sysid}）",
+        "properties": {
+          "device_id": { "type": "string", "example": "猎鹰" },
+          "box_id": { "type": "string", "example": "brain_box_001" },
+          "device_type": { "type": "string", "example": "quadcopter" },
+          "protocol": { "type": "string", "example": "mavlink" },
+          "status": { "type": "string", "enum": ["online", "offline", "unknown"] },
+          "last_heartbeat": { "type": "number" },
+          "position": {
+            "type": "object",
+            "properties": {
+              "latitude": { "type": "number" },
+              "longitude": { "type": "number" },
+              "altitude": { "type": "number" },
+              "relative_alt": { "type": "number" }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "description": "含 sysid/flight_mode/arm_state/attitude/velocity/battery/imu/barometer/gps 等",
+            "additionalProperties": true
+          }
+        }
+      },
+      "Waypoint": {
+        "type": "object",
+        "description": "航点（抽稀后：经纬度 7 位小数、高度/速度/悬停 2 位小数）",
+        "properties": {
+          "latitude": { "type": "number", "example": 39.9042 },
+          "longitude": { "type": "number", "example": 116.4074 },
+          "altitude": { "type": "number", "example": 100.0 },
+          "speed": { "type": "number", "example": 8.0 },
+          "hold_time": { "type": "number", "example": 0.0 }
+        }
+      },
+      "Trajectory": {
+        "type": "object",
+        "description": "轨迹（入库前经 Douglas-Peucker 抽稀，metadata.simplify 记录压缩信息）",
+        "properties": {
+          "trajectory_id": { "type": "string" },
+          "device_id": { "type": "string" },
+          "algorithm_name": { "type": "string", "example": "simple_linear" },
+          "waypoints": { "type": "array", "items": { "$ref": "#/components/schemas/Waypoint" } },
+          "total_distance": { "type": "number", "description": "米" },
+          "estimated_time": { "type": "number", "description": "秒" },
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "simplify": {
+                "type": "object",
+                "properties": {
+                  "epsilon_m": { "type": "number", "example": 0.5 },
+                  "raw_waypoint_count": { "type": "integer", "example": 101 },
+                  "simplified_waypoint_count": { "type": "integer", "example": 2 }
+                }
+              }
+            }
+          }
+        }
+      },
+      "NavigationTask": {
+        "type": "object",
+        "description": "导航任务（SQLite 持久化，manage_server.db tasks 表）",
+        "properties": {
+          "task_id": { "type": "string", "example": "nav_a1b2c3d4e5f6" },
+          "instruction_id": { "type": "string" },
+          "box_id": { "type": "string" },
+          "device_id": { "type": "string" },
+          "target_position": { "type": "object", "additionalProperties": true },
+          "algorithm": { "type": "string" },
+          "parameters": { "type": "object", "additionalProperties": true },
+          "status": { "type": "string", "enum": ["pending", "executing", "completed", "failed"] },
+          "trajectory_id": { "type": "string", "nullable": true },
+          "created_at": { "type": "number" },
+          "completed_at": { "type": "number", "nullable": true },
+          "result": { "type": "object", "description": "轨迹/执行结果（已抽稀）", "additionalProperties": true }
+        }
+      }
+    }
+  }
+}
