@@ -316,9 +316,40 @@ class EdgeManager:
         box_id = params.get("box_id", "")
         device_id = params.get("device_id", "")
         instruction_id = params.get("instruction_id", "")
-        target_position = params.get("target_position", {})
+        target_position = params.get("target_position") or {}
         algorithm = params.get("algorithm", "simple_linear")
-        parameters = params.get("parameters", {})
+        parameters = params.get("parameters", {}) or {}
+
+        # 多目标点：parameters.target_positions 为目标点数组，盒子侧按段推理并拼接
+        # 未提供（缺失 / null / 空数组）时回退到单目标点 target_position
+        target_positions = parameters.get("target_positions")
+        if target_positions:
+            if not isinstance(target_positions, list):
+                return {
+                    "code": -1,
+                    "msg": "parameters.target_positions 必须为目标点数组",
+                    "data": {},
+                }
+            for index, item in enumerate(target_positions):
+                if not isinstance(item, dict) or not all(
+                    key in item for key in ("latitude", "longitude")
+                ):
+                    return {
+                        "code": -1,
+                        "msg": (
+                            f"parameters.target_positions[{index}] "
+                            "需包含 latitude/longitude"
+                        ),
+                        "data": {},
+                    }
+            # 数组优先：两者都存在时直接忽略单个 target_position 的值
+            target_position = target_positions[-1]
+        if not target_position:
+            return {
+                "code": -1,
+                "msg": "缺少 target_position 或 parameters.target_positions",
+                "data": {},
+            }
 
         if self._registry.is_blacklisted(box_id):
             return {"code": -1, "msg": f"类脑盒子 {box_id} 已被拉黑", "data": {}}
@@ -384,24 +415,71 @@ class EdgeManager:
         return {"code": 0, "msg": "success", "data": task.to_dict()}
 
     def execute_trajectory(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """通过 WS 转发轨迹执行指令，成功后更新任务状态（数据库）"""
+        """通过 WS 向类脑盒子下发航点任务（waypoint_mission），成功后更新任务状态。
+
+        航点来源优先级:
+        1. 调用方显式传入的 device_id / waypoints；
+        2. 否则按 trajectory_id 从任务库读取导航指令生成的真实轨迹
+           （device_id + waypoints），即盒子已生成并入库的航点序列。
+        """
         box_id = params.get("box_id", "")
         trajectory_id = params.get("trajectory_id", "")
-        result = self._send_command_to_box(box_id, "execute", {
-            "trajectory_id": trajectory_id,
-        })
-        if result.get("code", -1) == 0:
+        device_id = params.get("device_id", "")
+        waypoints = params.get("waypoints") or []
+        if not isinstance(waypoints, list):
+            return {"code": -1, "msg": "waypoints 必须为航点列表", "data": {}}
+
+        task = None
+        need_lookup = trajectory_id and (not device_id or not waypoints)
+        if need_lookup:
             with self._lock_internal:
                 task = self._db.find_by_trajectory(
                     trajectory_id, statuses=[NavigationStatus.EXECUTING]
                 )
+            if task:
+                device_id = device_id or task.device_id
+                if not waypoints:
+                    waypoints = list(task.result.get("waypoints") or [])
+
+        if need_lookup and not task:
+            return {
+                "code": -1,
+                "msg": f"轨迹 {trajectory_id} 未找到或已执行，无可用航点",
+                "data": {},
+            }
+        if not device_id:
+            return {"code": -1, "msg": "缺少必要参数: device_id", "data": {}}
+        if not waypoints:
+            return {"code": -1, "msg": "缺少必要参数: waypoints", "data": {}}
+
+        payload = {
+            "device_id": device_id,
+            "auto_start": params.get("auto_start", True),
+            "auto_arm": params.get("auto_arm", True),
+            "waypoints": waypoints,
+        }
+        result = self._send_command_to_box(box_id, "waypoint_mission", payload)
+
+        if result.get("code", -1) == 0:
+            with self._lock_internal:
+                if task is None and trajectory_id:
+                    task = self._db.find_by_trajectory(
+                        trajectory_id, statuses=[NavigationStatus.EXECUTING]
+                    )
                 if task:
                     self._db.update_task(
                         task.task_id,
                         status=NavigationStatus.COMPLETED,
                         completed_at=time.time(),
                     )
-                    logger.info("Task %s completed via execute_trajectory", task.task_id)
+                    logger.info(
+                        "Task %s completed via waypoint_mission (%d waypoints)",
+                        task.task_id, len(waypoints),
+                    )
+        logger.info(
+            "Waypoint mission forwarded: box=%s device=%s waypoints=%d code=%s",
+            box_id, device_id, len(waypoints), result.get("code", -1),
+        )
         return result
 
     def list_tasks(self, box_id: str = "", instruction_id: str = "") -> Dict[str, Any]:

@@ -142,10 +142,14 @@ tools_sync_cfgs: {
                             },
                             {
                                 "func_name": "execute_trajectory",
-                                "func_desc": "转发轨迹执行指令到类脑盒子",
+                                "func_desc": "下发航点任务（waypoint_mission）到类脑盒子；device_id/waypoints 省略时按 trajectory_id 从任务库读取导航指令生成的真实轨迹",
                                 "params": {
                                     "box_id": "目标类脑盒子标识符",
-                                    "trajectory_id": "轨迹 ID（从导航指令响应中获取）"
+                                    "trajectory_id": "轨迹 ID（从导航指令响应中获取；用于解析真实 device_id 与 waypoints）",
+                                    "device_id": "可选，目标无人机设备 ID（显式传入时优先）",
+                                    "waypoints": "可选，航点列表；省略时使用轨迹中的真实航点。每项至少含 latitude/longitude/altitude，可带 command/hold_time/accept_radius/yaw 等",
+                                    "auto_start": "可选，任务上传后自动启动，默认 true",
+                                    "auto_arm": "可选，自动解锁，默认 true"
                                 }
                             },
                             {

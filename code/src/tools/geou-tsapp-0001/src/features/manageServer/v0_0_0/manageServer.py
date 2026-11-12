@@ -35,7 +35,7 @@
 
   导航任务:
     navigation_instruction  下发导航指令（经由类脑盒子到无人机）
-    execute_trajectory      转发轨迹执行指令
+    execute_trajectory      下发航点任务（waypoint_mission）到类脑盒子
 
   设备查询:
     list_devices          获取所有已知无人机设备列表
@@ -155,15 +155,35 @@ navigation_instruction:
     "algorithm": "simple_linear",
     "parameters": {
         "step_count": 5,
-        "speed": 8.0
+        "speed": 8.0,
+        "target_positions": [
+            {"latitude": 39.91, "longitude": 116.42, "altitude": 120.0},
+            {"latitude": 39.92, "longitude": 116.43, "altitude": 120.0},
+            {"latitude": 39.93, "longitude": 116.44, "altitude": 120.0}
+        ]
     }
 }
+说明: parameters.target_positions 为目标点数组；传入后盒子会对算法执行
+     len(target_positions) 次推理，每次以上一段的终点为起点，所有分段轨迹
+     拼接为一条长轨迹保存。target_position 与 target_positions 存在其一即可；
+     两者同时存在时以 target_positions 为准，target_position 的值被忽略。
 
 execute_trajectory:
 {
     "box_id": "brain_box_001",
-    "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "device_id": "drone_1",
+    "auto_start": true,
+    "auto_arm": true,
+    "waypoints": [
+        {"command": "takeoff", "latitude": 47.397742, "longitude": 8.545594, "altitude": 15, "hold_time": 5},
+        {"latitude": 47.397800, "longitude": 8.545700, "altitude": 20, "hold_time": 3},
+        {"latitude": 47.397900, "longitude": 8.545400, "altitude": 20, "accept_radius": 2.0, "yaw": 90},
+        {"command": "land", "latitude": 47.397742, "longitude": 8.545594, "altitude": 0}
+    ]
 }
+说明: device_id/waypoints 可省略，此时按 trajectory_id 从任务库读取
+     导航指令生成的真实设备与航点；auto_start/auto_arm 默认 true。
 
 list_devices:
 {
@@ -434,11 +454,14 @@ class CmanageServer:
         return self._handle_result("navigation_instruction", result)
 
     def execute_trajectory(self, params):
-        """转发轨迹执行指令到类脑盒子"""
+        """下发航点任务（waypoint_mission）到类脑盒子"""
         box_id = params.get("box_id", "")
         trajectory_id = params.get("trajectory_id", "")
+        device_id = params.get("device_id", "")
         self.progress_callback(
-            10, f"正在执行轨迹 (brain_box={box_id}, trajectory={trajectory_id})"
+            10,
+            f"正在执行航点任务 (brain_box={box_id}, trajectory={trajectory_id}, "
+            f"device={device_id})",
         )
         result = self._manager.execute_trajectory(params)
         return self._handle_result("execute_trajectory", result)

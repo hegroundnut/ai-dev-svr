@@ -102,8 +102,8 @@ POST /api/manageServer/CmanageServer/{subfunc}
 
 | subfunc | 说明 | 参数示例 |
 |---------|------|----------|
-| `navigation_instruction` | 下发导航指令，生成轨迹 | `{"box_id": "brain_box_001", "instruction_id": "nav_20240510_001", "device_id": "drone_sim_0", "target_position": {"latitude": 39.91, "longitude": 116.42, "altitude": 120.0}, "algorithm": "simple_linear", "parameters": {"step_count": 5, "speed": 8.0}}` |
-| `execute_trajectory` | 执行轨迹（完成后任务状态自动更新为 completed） | `{"box_id": "brain_box_001", "trajectory_id": "a1b2c3d4-..."}` |
+| `navigation_instruction` | 下发导航指令，生成轨迹；`parameters.target_positions` 传入目标点数组时按多段推理并拼接为一条长轨迹（每段起点为上一段终点） | `{"box_id": "brain_box_001", "instruction_id": "nav_20240510_001", "device_id": "drone_sim_0", "algorithm": "simple_linear", "parameters": {"step_count": 5, "speed": 8.0, "target_positions": [{"latitude": 39.91, "longitude": 116.42, "altitude": 120.0}, {"latitude": 39.92, "longitude": 116.43, "altitude": 120.0}]}}` |
+| `execute_trajectory` | 下发航点任务（`waypoint_mission`，可自动解锁/起飞；完成后任务状态更新为 completed）；多目标点拼接出的长轨迹会一次性整条执行 | `{"box_id": "brain_box_001", "trajectory_id": "a1b2c3d4-..."}`（device_id/waypoints 省略时从任务库读取真实轨迹；也可显式传入 `device_id`、`waypoints`、`auto_start`、`auto_arm`） |
 
 ### 设备查询
 

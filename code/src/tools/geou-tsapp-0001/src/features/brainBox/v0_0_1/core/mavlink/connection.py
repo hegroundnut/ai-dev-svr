@@ -450,6 +450,43 @@ class MAVLinkProtocol(DeviceProtocol):
             "waypoint_count": len(waypoints),
         }
 
+    async def start_mission(self, device_id: str) -> dict[str, Any]:
+        """切换任务模式并启动航点任务（AUTO/MISSION + MISSION_START）."""
+        device = self._devices.get(device_id)
+        if not device:
+            return {"success": False, "error": f"设备 {device_id} 未找到"}
+
+        channel = self._find_channel_for_device(device)
+        if not channel or not channel.connection:
+            return {"success": True, "message": f"模拟启动任务 {device_id}"}
+
+        conn = channel.connection
+        target = self._get_target_system(device)
+
+        def do_start() -> None:
+            from pymavlink import mavutil  # noqa: PLC0415
+
+            mode_mapping = conn.mode_mapping() or {}
+            for mode_name in ("AUTO.MISSION", "AUTO", "MISSION"):
+                if mode_name in mode_mapping:
+                    conn.mav.set_mode_send(
+                        target,
+                        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                        mode_mapping[mode_name],
+                    )
+                    logger.info(
+                        "设备 %s 已切换任务模式: %s", device_id, mode_name
+                    )
+                    break
+            conn.mav.command_long_send(
+                target, 0,
+                mavutil.mavlink.MAV_CMD_MISSION_START,
+                0, 0, 0, 0, 0, 0, 0, 0,
+            )
+
+        await channel.send_to_device(target, do_start)
+        return {"success": True, "message": "任务已启动", "device_id": device_id}
+
     # ── TCP 主动连接管理 ──────────────────────────────────────
 
     async def connect_drone(

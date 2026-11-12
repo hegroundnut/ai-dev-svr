@@ -105,7 +105,7 @@ def _apply_section(data: dict[str, Any], key: str, target: Any) -> None:
 class Settings:
     """全局配置（不含 server 段，server 由 main.py 独立管理）."""
 
-    box_id: str = "brain_box_002"
+    box_id: str = "brain_box_test_server"
     edge: EdgeServerConfig = field(default_factory=EdgeServerConfig)
     mavlink: MAVLinkConfig = field(default_factory=MAVLinkConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)

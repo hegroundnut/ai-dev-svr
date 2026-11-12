@@ -93,6 +93,7 @@ class BrainBoxManager:
             "summary": ("drones_summary", False, False),
             "instruction": ("navigation_instruction", True, True),
             "execute": ("execute_trajectory", True, True),
+            "waypoint_mission": ("waypoint_mission", True, True),
             "trajectories": ("list_trajectories", False, False),
             "algorithms": ("list_algorithms", False, False),
             "list_tasks": ("list_tasks", False, True),
@@ -208,13 +209,25 @@ class BrainBoxManager:
     # ── 导航 ──
 
     async def navigation_instruction(self, params: dict[str, Any]) -> dict[str, Any]:
-        """接收导航指令，生成轨迹."""
+        """接收导航指令，生成轨迹.
+
+        ``parameters.target_positions`` 可携带目标点数组，此时按多段推理并
+        拼接为一条长轨迹；未携带时沿用单个 ``target_position``。
+        """
+        parameters = params.get("parameters", {}) or {}
+        target_positions = parameters.get("target_positions") or []
+        # 单个地址与数组存在其一即可；两者都存在时以数组为准，忽略单个地址的值
+        target_position = (
+            target_positions[-1]
+            if isinstance(target_positions, list) and target_positions
+            else (params.get("target_position") or {})
+        )
         instruction = NavigationInstruction(
             instruction_id=params["instruction_id"],
             device_id=params["device_id"],
-            target_position=params["target_position"],
+            target_position=target_position,
             algorithm=params.get("algorithm", "default"),
-            parameters=params.get("parameters", {}),
+            parameters=parameters,
         )
         try:
             trajectory = await self._navigation_service.process_instruction(instruction)
@@ -231,6 +244,30 @@ class BrainBoxManager:
         result = await self._navigation_service.execute_trajectory(trajectory_id)
         if result.get("success", False):
             return {"code": 0, "msg": "轨迹执行中", "data": result}
+        return {"code": -1, "msg": result.get("error", ""), "data": result}
+
+    async def waypoint_mission(self, params: dict[str, Any]) -> dict[str, Any]:
+        """直接下发完整航点任务（含多目标点拼接后的长轨迹）并执行.
+
+        与 ``execute_trajectory``（按 trajectory_id 读库）不同，本接口直接
+        接收 manageServer 解析好的完整航点列表，一次性上传并飞完整条路径。
+        ``auto_arm`` / ``auto_start`` 默认 true：自动解锁并启动任务。
+        """
+        device_id = params.get("device_id", "")
+        waypoints = params.get("waypoints") or []
+        if not device_id:
+            return {"code": -1, "msg": "缺少必要参数: device_id", "data": {}}
+        if not isinstance(waypoints, list) or not waypoints:
+            return {"code": -1, "msg": "缺少必要参数: waypoints", "data": {}}
+
+        result = await self._navigation_service.execute_waypoints(
+            device_id=device_id,
+            waypoints=waypoints,
+            auto_arm=bool(params.get("auto_arm", True)),
+            auto_start=bool(params.get("auto_start", True)),
+        )
+        if result.get("success", False):
+            return {"code": 0, "msg": "航点任务已下发并启动", "data": result}
         return {"code": -1, "msg": result.get("error", ""), "data": result}
 
     def list_trajectories(self) -> dict[str, Any]:

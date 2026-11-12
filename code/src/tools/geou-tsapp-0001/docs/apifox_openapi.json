@@ -467,7 +467,7 @@
       "post": {
         "tags": ["manageServer-指令转发"],
         "summary": "转发控制指令到指定类脑盒子，操控目标无人机",
-        "description": "command.type 支持：arm / disarm / takeoff / land / goto / set_mode。\nset_mode 的可用模式请先通过 `get_modes` 查询（由真机 mode_mapping 动态决定）。\n注意：execute_trajectory 走任务上传（MISSION 协议），不会自动切 GUIDED/解锁/起飞，需先用本接口 set_mode + arm + takeoff。",
+        "description": "command.type 支持：arm / disarm / takeoff / land / goto / set_mode。\nset_mode 的可用模式请先通过 `get_modes` 查询（由真机 mode_mapping 动态决定）。\n注意：execute_trajectory 以 waypoint_mission 下发航点，默认 auto_arm/auto_start=true，可自动解锁并启动任务；如需手动控制，可将 auto_arm/auto_start 设为 false 后再用本接口。",
         "operationId": "send_command",
         "requestBody": {
           "required": true,
@@ -592,7 +592,7 @@
       "post": {
         "tags": ["manageServer-导航任务"],
         "summary": "下发导航指令（经由类脑盒子生成轨迹）",
-        "description": "创建任务记录（SQLite，status=pending）后立即返回，后台线程经 WS 转发到盒子；盒子生成轨迹（入库前抽稀）后任务转为 executing。\n注意：本接口只生成/下发轨迹，不自动执行飞行；执行需另调 execute_trajectory（任务上传，须手动 set_mode GUIDED + arm + takeoff）。",
+        "description": "创建任务记录（SQLite，status=pending）后立即返回，后台线程经 WS 转发到盒子；盒子生成轨迹（入库前抽稀）后任务转为 executing。\n支持两种目标点传法：① 直接传 target_position（单目标点）；② 在 parameters.target_positions 传目标点数组，盒子会对算法执行 len(target_positions) 次推理，每次以上一段的终点为起点，所有分段轨迹拼接为一条长轨迹保存。两者存在其一即可；同时存在时以 target_positions 为准，直接忽略 target_position 的值。\n注意：本接口只生成/下发轨迹，不自动执行飞行；执行需另调 execute_trajectory（以 waypoint_mission 下发真实航点）。",
         "operationId": "navigation_instruction",
         "requestBody": {
           "required": true,
@@ -600,13 +600,14 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["box_id", "instruction_id", "device_id", "target_position"],
+                "required": ["box_id", "instruction_id", "device_id"],
                 "properties": {
                   "box_id": { "type": "string" },
                   "instruction_id": { "type": "string", "description": "导航指令唯一 ID" },
                   "device_id": { "type": "string" },
                   "target_position": {
                     "type": "object",
+                    "description": "单目标点；与 parameters.target_positions 存在其一即可，两者都存在时以 target_positions 为准，本字段的值被忽略",
                     "required": ["latitude", "longitude", "altitude"],
                     "properties": {
                       "latitude": { "type": "number" },
@@ -615,14 +616,38 @@
                     }
                   },
                   "algorithm": { "type": "string", "default": "simple_linear", "description": "导航算法名称（另有 web_api_latlng 等）" },
-                  "parameters": { "type": "object", "description": "可选算法参数", "additionalProperties": true }
+                  "parameters": {
+                    "type": "object",
+                    "description": "可选算法参数",
+                    "additionalProperties": true,
+                    "properties": {
+                      "target_positions": {
+                        "type": "array",
+                        "description": "目标点数组。传入后算法执行 len(target_positions) 次推理，每次以上一段的终点为起点，所有分段轨迹拼接为一条长轨迹保存。省略、null 或空数组时回退到 target_position（单目标点），接口仍正常成功；每项需包含 latitude/longitude/altitude。",
+                        "items": {
+                          "type": "object",
+                          "required": ["latitude", "longitude", "altitude"],
+                          "properties": {
+                            "latitude": { "type": "number" },
+                            "longitude": { "type": "number" },
+                            "altitude": { "type": "number" }
+                          }
+                        }
+                      }
+                    }
+                  }
                 }
               },
               "example": {
                 "box_id": "brain_box_001", "instruction_id": "nav_20240510_001", "device_id": "猎鹰",
-                "target_position": { "latitude": 39.91, "longitude": 116.42, "altitude": 120.0 },
                 "algorithm": "simple_linear",
-                "parameters": { "step_count": 5, "speed": 8.0 }
+                "parameters": {
+                  "step_count": 5, "speed": 8.0,
+                  "target_positions": [
+                    { "latitude": 39.91, "longitude": 116.42, "altitude": 120.0 },
+                    { "latitude": 39.92, "longitude": 116.43, "altitude": 120.0 }
+                  ]
+                }
               }
             }
           }
@@ -653,8 +678,8 @@
     "/api/manageServer/CmanageServer/execute_trajectory": {
       "post": {
         "tags": ["manageServer-导航任务"],
-        "summary": "转发轨迹执行指令到类脑盒子",
-        "description": "盒子将轨迹以 MAVLink 任务方式上传（mission_count + mission_item_int，非 goto）；成功后任务转 completed。\n不会自动切 GUIDED/解锁/起飞/MISSION_START，须先通过 send_command 手动完成。仅 pending 状态轨迹可执行。",
+        "summary": "下发航点任务（waypoint_mission）到类脑盒子",
+        "description": "以盒子 waypoint_mission 接口下发真实航点：device_id/waypoints 省略时按 trajectory_id 从任务库读取导航指令生成的真实设备与航点。\nauto_start/auto_arm 默认 true，可自动解锁并启动任务（无需再手动 set_mode + arm + takeoff）。成功后任务转 completed。\n多目标点导航（parameters.target_positions）已由盒子拼接为一条长轨迹，本接口会一次性上传全部航点，按顺序飞完整条路径。",
         "operationId": "execute_trajectory",
         "requestBody": {
           "required": true,
@@ -662,13 +687,17 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["box_id", "trajectory_id"],
+                "required": ["box_id"],
                 "properties": {
                   "box_id": { "type": "string" },
-                  "trajectory_id": { "type": "string", "description": "轨迹 ID（从导航指令响应/任务中获取）" }
+                  "trajectory_id": { "type": "string", "description": "轨迹 ID（从导航指令响应/任务中获取）；省略 device_id/waypoints 时用于解析真实航点" },
+                  "device_id": { "type": "string", "description": "可选，目标无人机设备 ID；显式传入时优先" },
+                  "waypoints": { "type": "array", "description": "可选，航点列表；省略时使用轨迹中的真实航点", "items": { "type": "object" } },
+                  "auto_start": { "type": "boolean", "default": true, "description": "任务上传后自动启动" },
+                  "auto_arm": { "type": "boolean", "default": true, "description": "自动解锁" }
                 }
               },
-              "example": { "box_id": "brain_box_001", "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890" }
+              "example": { "box_id": "brain_box_001", "trajectory_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "auto_start": true, "auto_arm": true }
             }
           }
         },
