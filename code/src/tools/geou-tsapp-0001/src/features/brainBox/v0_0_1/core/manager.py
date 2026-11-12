@@ -249,28 +249,69 @@ class BrainBoxManager:
         return {"code": -1, "msg": result.get("error", ""), "data": result}
 
     async def waypoint_mission(self, params: dict[str, Any]) -> dict[str, Any]:
-        """直接下发完整航点任务（含多目标点拼接后的长轨迹）并执行.
+        """航点飞行服务：接收外部航点数据（经纬度+高度），上传并启动航点任务.
 
-        与 ``execute_trajectory``（按 trajectory_id 读库）不同，本接口直接
-        接收 manageServer 解析好的完整航点列表，一次性上传并飞完整条路径。
-        ``auto_arm`` / ``auto_start`` 默认 true：自动解锁并启动任务。
+        参数:
+            device_id: 无人机设备 ID（必填）
+            waypoints: 航点列表（必填，非空），每项支持:
+                latitude/longitude（必填，度）、altitude（米，默认10）、
+                hold_time（停留秒）、accept_radius（到达半径米）、yaw（航向度）、
+                command（waypoint/takeoff/land/rtl/loiter，默认 waypoint）
+            auto_start: 上传成功后是否立即启动任务（默认 True）
+            auto_arm: 启动前若未解锁是否自动解锁（默认 True）
+
+        任务执行进度可通过 query/summary 读取设备 metadata["mission_progress"]。
         """
         device_id = params.get("device_id", "")
-        waypoints = params.get("waypoints") or []
         if not device_id:
             return {"code": -1, "msg": "缺少必要参数: device_id", "data": {}}
-        if not isinstance(waypoints, list) or not waypoints:
-            return {"code": -1, "msg": "缺少必要参数: waypoints", "data": {}}
 
-        result = await self._navigation_service.execute_waypoints(
-            device_id=device_id,
-            waypoints=waypoints,
-            auto_arm=bool(params.get("auto_arm", True)),
-            auto_start=bool(params.get("auto_start", True)),
-        )
+        raw_waypoints = params.get("waypoints")
+        if not isinstance(raw_waypoints, list) or not raw_waypoints:
+            return {"code": -1, "msg": "缺少必要参数: waypoints（非空航点列表）", "data": {}}
+
+        # 校验并规范化航点数据
+        waypoints: list[dict[str, Any]] = []
+        for i, wp in enumerate(raw_waypoints):
+            if not isinstance(wp, dict):
+                return {"code": -1, "msg": f"第 {i} 个航点格式错误（应为对象）", "data": {}}
+            try:
+                lat = float(wp["latitude"])
+                lon = float(wp["longitude"])
+                alt = float(wp.get("altitude", 10.0))
+            except (KeyError, TypeError, ValueError):
+                return {
+                    "code": -1,
+                    "msg": f"第 {i} 个航点缺少有效的 latitude/longitude/altitude",
+                    "data": {},
+                }
+            if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+                return {
+                    "code": -1,
+                    "msg": f"第 {i} 个航点经纬度超出范围: lat={lat}, lon={lon}",
+                    "data": {},
+                }
+            item: dict[str, Any] = {"latitude": lat, "longitude": lon, "altitude": alt}
+            for key in ("command", "hold_time", "accept_radius", "pass_radius", "yaw"):
+                if wp.get(key) is not None:
+                    item[key] = wp[key]
+            waypoints.append(item)
+
+        auto_start = bool(params.get("auto_start", True))
+        auto_arm = bool(params.get("auto_arm", True))
+
+        try:
+            result = await self._mavlink.send_waypoints(
+                device_id, waypoints, auto_start=auto_start, auto_arm=auto_arm
+            )
+        except Exception as e:
+            logger.exception("航点任务执行异常 (设备 %s)", device_id)
+            return {"code": -1, "msg": f"航点任务执行异常: {e}", "data": {}}
+
         if result.get("success", False):
-            return {"code": 0, "msg": "航点任务已下发并启动", "data": result}
-        return {"code": -1, "msg": result.get("error", ""), "data": result}
+            msg = "航点任务已上传并启动" if result.get("started") else "航点任务已上传（未启动）"
+            return {"code": 0, "msg": msg, "data": result}
+        return {"code": -1, "msg": result.get("error", "航点任务失败"), "data": result}
 
     async def reboot_drone(self, params: dict[str, Any]) -> dict[str, Any]:
         """远程重启无人机飞控 / 伴飞计算机."""

@@ -1103,6 +1103,82 @@
         }
       }
     },
+    "/api/brainBox/CbrainBox/waypoint_mission": {
+      "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
+      "post": {
+        "tags": ["brainBox"],
+        "summary": "航点飞行服务（盒子直连）",
+        "description": "接收外部航点数据（经纬度+高度），通过完整 MAVLink 任务协议上传并启动航点任务。\n流程: MISSION_COUNT → (MISSION_REQUEST → MISSION_ITEM_INT)* → MISSION_ACK → 解锁（auto_arm）→ MISSION_START → 切任务模式。\n飞控不逐项请求时自动盲发兜底；ArduPilot 设备自动在 seq0 追加 home，未提供起飞指令时插入 NAV_TAKEOFF。\n航点字段: latitude/longitude 必填，altitude 默认 10 米，command 支持 waypoint/takeoff/land/rtl/loiter。",
+        "operationId": "brainbox_waypoint_mission",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["device_id", "waypoints"],
+                "properties": {
+                  "device_id": { "type": "string", "description": "无人机设备 ID" },
+                  "auto_start": { "type": "boolean", "default": true, "description": "上传成功后是否立即启动任务" },
+                  "auto_arm": { "type": "boolean", "default": true, "description": "启动前若未解锁是否自动解锁" },
+                  "waypoints": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "航点列表",
+                    "items": {
+                      "type": "object",
+                      "required": ["latitude", "longitude"],
+                      "properties": {
+                        "latitude": { "type": "number", "description": "纬度（度）" },
+                        "longitude": { "type": "number", "description": "经度（度）" },
+                        "altitude": { "type": "number", "default": 10, "description": "相对起飞点高度（米）" },
+                        "command": { "type": "string", "enum": ["waypoint", "takeoff", "land", "rtl", "loiter"], "default": "waypoint", "description": "航点指令类型" },
+                        "hold_time": { "type": "number", "description": "航点停留时间（秒），默认 0" },
+                        "accept_radius": { "type": "number", "description": "到达判定半径（米），waypoint/loiter 默认 2" },
+                        "pass_radius": { "type": "number", "description": "过点半径（米），0=直接飞向航点" },
+                        "yaw": { "type": "number", "description": "到达航向（度），默认 0（正北）" }
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "device_id": "drone_1",
+                "auto_start": true,
+                "auto_arm": true,
+                "waypoints": [
+                  { "command": "takeoff", "latitude": 39.9042, "longitude": 116.4074, "altitude": 20, "hold_time": 5 },
+                  { "latitude": 39.9050, "longitude": 116.4080, "altitude": 30, "accept_radius": 2.0, "yaw": 90 },
+                  { "command": "land", "latitude": 39.9042, "longitude": 116.4074, "altitude": 0 }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功/失败（业务错误 code=-1）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0,
+                  "msg": "航点任务已上传并启动",
+                  "data": {
+                    "success": true,
+                    "started": true,
+                    "armed": true,
+                    "mode": "AUTO",
+                    "waypoint_count": 3,
+                    "mission_item_count": 5
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/brainBox/CbrainBox/reboot_drone": {
       "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
       "post": {

@@ -96,8 +96,23 @@ class CbrainBox:
         return self._manager.list_protocols()
 
     # ------------------------------------------------------------------
-    #  无人机远程重启 & 日志查询
+    #  无人机操作（供 HTTP 本地测试 / 平台直接调用）
     # ------------------------------------------------------------------
+
+    def waypoint_mission(self, params: dict) -> dict:
+        """航点飞行服务 — 接收外部航点数据（经纬度+高度）并控制无人机执行.
+
+        参数与 WS action=waypoint_mission 一致:
+            device_id: 无人机设备 ID（必填）
+            waypoints: 航点列表 [{latitude, longitude, altitude, hold_time?,
+                                  accept_radius?, yaw?, command?}]
+            auto_start: 上传成功后是否立即启动任务（默认 True）
+            auto_arm: 启动前若未解锁是否自动解锁（默认 True）
+        """
+        # 上传 + 解锁 + 启动最长约 40s，预留裕量
+        return self._run_async(
+            self._manager.waypoint_mission(params), timeout=120.0
+        )
 
     def reboot_drone(self, params: dict) -> dict:
         """远程重启无人机飞控 / 伴飞计算机."""

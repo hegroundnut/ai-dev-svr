@@ -252,7 +252,10 @@ class NavigationService:
         try:
             proto = self._protocol_registry.get("mavlink")
             if isinstance(proto, MAVLinkProtocol):
-                result = await proto.send_waypoints(device_id, waypoints_data)
+                # 仅上传航点，启动由调用方（manageServer waypoint_mission）负责
+                result = await proto.send_waypoints(
+                    device_id, waypoints_data, auto_start=False, auto_arm=False
+                )
                 logger.info(
                     "轨迹 %s 已发送到设备 %s: %s",
                     trajectory_id, device_id, result
@@ -293,11 +296,16 @@ class NavigationService:
         try:
             proto = self._protocol_registry.get("mavlink")
             if isinstance(proto, MAVLinkProtocol):
-                upload = await proto.send_waypoints(device_id, waypoints)
-            else:
-                upload = await self._drone_manager.send_command(
-                    device_id, {"type": "mission", "waypoints": waypoints}
+                # MAVLink 任务协议：上传航点 → 解锁（可选）→ 启动任务一次完成
+                return await proto.send_waypoints(
+                    device_id,
+                    waypoints,
+                    auto_start=auto_start,
+                    auto_arm=auto_arm,
                 )
+            upload = await self._drone_manager.send_command(
+                device_id, {"type": "mission", "waypoints": waypoints}
+            )
         except Exception:
             logger.exception("航点任务下发异常: device=%s", device_id)
             return {"success": False, "error": "航点任务下发异常"}

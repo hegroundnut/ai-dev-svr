@@ -120,6 +120,10 @@ def process_heartbeat(
     device.last_heartbeat = time.time()
     device.status = DeviceStatus.ONLINE
     device.metadata["sysid"] = sys_id
+    # autopilot/mav_type 每帧刷新：设备对象可能在别处先建立或首帧异常，
+    # 只在创建时写入会导致后续一直缺失（ArduPilot 兼容逻辑依赖这两个字段）
+    device.metadata["autopilot"] = msg.autopilot
+    device.metadata["mav_type"] = msg.type
     device.metadata["system_status"] = msg.system_status
     device.metadata["flight_mode"] = mode
     device.metadata["arm_state"] = arm_state
@@ -238,6 +242,104 @@ def process_gps_raw(msg: Any, devices: dict[str, DeviceInfo]) -> None:
             "eph": msg.eph,
             "epv": msg.epv,
         }
+
+
+def process_mission_current(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理任务进度消息 (MISSION_CURRENT) — 更新当前执行的航点序号.
+
+    current_seq 为用户航点序号（减去 home/自动起飞等合成任务项偏移），
+    raw_seq 为飞控任务项原始序号。
+    """
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
+    if device:
+        progress = device.metadata.get("mission_progress") or {}
+        offset = int(progress.get("user_offset", 0) or 0)
+        progress["raw_seq"] = msg.seq
+        progress["current_seq"] = max(0, msg.seq - offset)
+        progress["last_update"] = time.time()
+        device.metadata["mission_progress"] = progress
+        logger.debug(
+            "无人机 %s 任务进度: 当前航点 seq=%s (飞控序号 %s)",
+            device_id, progress["current_seq"], msg.seq,
+        )
+
+
+def process_mission_item_reached(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理航点到达消息 (MISSION_ITEM_REACHED) — 记录最近到达的航点序号（用户航点序号）."""
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
+    if device:
+        progress = device.metadata.get("mission_progress") or {}
+        offset = int(progress.get("user_offset", 0) or 0)
+        progress["raw_reached_seq"] = msg.seq
+        progress["last_reached_seq"] = max(0, msg.seq - offset)
+        progress["last_update"] = time.time()
+        device.metadata["mission_progress"] = progress
+        logger.info(
+            "无人机 %s 到达航点 seq=%s (飞控序号 %s)",
+            device_id, progress["last_reached_seq"], msg.seq,
+        )
+
+
+# MAVLink 严重等级 / 指令结果码 → 可读名称（用于解锁、指令失败诊断）
+_MAV_SEVERITY_NAMES = {
+    0: "EMERGENCY", 1: "ALERT", 2: "CRITICAL", 3: "ERROR",
+    4: "WARNING", 5: "NOTICE", 6: "INFO", 7: "DEBUG",
+}
+_MAV_RESULT_NAMES = {
+    0: "ACCEPTED", 1: "TEMPORARILY_REJECTED", 2: "DENIED", 3: "UNSUPPORTED",
+    4: "FAILED", 5: "IN_PROGRESS", 6: "CANCELLED",
+}
+
+# 飞控主动上报的文本消息（含 PreArm 检查失败原因）
+def process_statustext(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理 STATUSTEXT — 记录并输出飞控文本消息（如 PreArm 拒绝解锁原因）."""
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
+    if not device:
+        return
+    text = msg.text
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="ignore")
+    text = str(text).strip("\x00 ").strip()
+    if not text:
+        return
+
+    severity = getattr(msg, "severity", 6)
+    sev_name = _MAV_SEVERITY_NAMES.get(severity, str(severity))
+    device.metadata["last_status_text"] = {
+        "text": text,
+        "severity": severity,
+        "severity_name": sev_name,
+        "time": time.time(),
+    }
+    if severity <= 3:
+        logger.warning("无人机 %s 飞控消息[%s]: %s", device_id, sev_name, text)
+    else:
+        logger.info("无人机 %s 飞控消息[%s]: %s", device_id, sev_name, text)
+
+
+def process_command_ack(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理 COMMAND_ACK — 记录指令执行结果（解锁/模式切换等失败诊断依据）."""
+    device_id = resolve_device_id(devices, msg.get_srcSystem())
+    device = devices.get(device_id) if device_id else None
+    result = getattr(msg, "result", 0)
+    result_name = _MAV_RESULT_NAMES.get(result, str(result))
+    if device:
+        device.metadata["last_command_ack"] = {
+            "command": msg.command,
+            "result": result,
+            "result_name": result_name,
+            "time": time.time(),
+        }
+    if result == 0:
+        logger.debug("收到指令确认: command=%s result=%s", msg.command, result_name)
+    else:
+        logger.warning(
+            "指令被飞控拒绝: command=%s result=%s (%s)",
+            msg.command, result, result_name,
+        )
 
 
 def get_mav_type_name(mav_type: int) -> str:
