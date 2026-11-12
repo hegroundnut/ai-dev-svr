@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections import deque
 from typing import Any
 
 from config.settings import MAVLinkConfig, MAVLinkConnectionEntry, ReconnectConfig
@@ -34,11 +35,34 @@ from core.mavlink.parser import (
     process_scaled_pressure,
     process_sys_status,
     process_vfr_hud,
+    resolve_device_id,
 )
 
 logger = logging.getLogger("brainBox.core.mavlink")
 
 _MAX_SIMULATED_DRONES = 3
+
+# 每设备 STATUSTEXT 环形缓存上限（条）
+_STATUS_TEXT_CACHE_SIZE = 300
+
+# MAV_SEVERITY 名称映射
+_SEVERITY_NAMES = {
+    0: "EMERGENCY",
+    1: "ALERT",
+    2: "CRITICAL",
+    3: "ERROR",
+    4: "WARNING",
+    5: "NOTICE",
+    6: "INFO",
+    7: "DEBUG",
+}
+
+# 远程重启对象 → MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN 的 param1
+_REBOOT_COMPONENTS = {
+    "autopilot": 1,
+    "companion": 2,
+    "both": 3,
+}
 
 # 无真实连接时返回的常见 ArduCopter 飞行模式（仅模拟调试用）
 _SIMULATED_MODES = (
@@ -77,6 +101,8 @@ class _MAVLinkChannel:
         self._reconnect_attempts = 0
         self._devices_ref: dict[str, DeviceInfo] | None = None
         self._is_tcp = entry.connection_string.startswith("tcp:")
+        # 每设备飞控文本消息（STATUSTEXT）环形缓存
+        self.status_texts: dict[str, deque[dict[str, Any]]] = {}
 
     @property
     def label(self) -> str:
@@ -213,6 +239,8 @@ class _MAVLinkChannel:
                 process_scaled_pressure(msg, devices)
             elif msg_type == "GPS_RAW_INT":
                 process_gps_raw(msg, devices)
+            elif msg_type == "STATUSTEXT":
+                self._process_status_text(msg, devices)
             elif msg_type == "COMMAND_ACK":
                 logger.debug(
                     "收到指令确认: command=%s, result=%s",
@@ -221,6 +249,37 @@ class _MAVLinkChannel:
                 )
 
             await asyncio.sleep(0.01)
+
+    def _process_status_text(
+        self, msg: Any, devices: dict[str, DeviceInfo]
+    ) -> None:
+        """缓存飞控 STATUSTEXT 文本消息（每设备最近 300 条）."""
+        device_id = resolve_device_id(devices, msg.get_srcSystem())
+        if not device_id:
+            return
+
+        text = getattr(msg, "text", "")
+        if isinstance(text, (bytes, bytearray)):
+            text = text.decode("utf-8", errors="replace")
+        text = str(text or "").rstrip("\x00").strip()
+        if not text:
+            return
+
+        try:
+            severity = int(getattr(msg, "severity", 6))
+        except (TypeError, ValueError):
+            severity = 6
+
+        entry = {
+            "text": text,
+            "severity": severity,
+            "severity_name": _SEVERITY_NAMES.get(severity, "UNKNOWN"),
+            "time": time.time(),
+        }
+        buffer = self.status_texts.setdefault(
+            device_id, deque(maxlen=_STATUS_TEXT_CACHE_SIZE)
+        )
+        buffer.append(entry)
 
     # ── TCP 自动重连 ──────────────────────────────────────────
 
@@ -486,6 +545,81 @@ class MAVLinkProtocol(DeviceProtocol):
 
         await channel.send_to_device(target, do_start)
         return {"success": True, "message": "任务已启动", "device_id": device_id}
+
+    async def reboot(
+        self, device_id: str, component: str = "autopilot"
+    ) -> dict[str, Any]:
+        """远程重启飞控 / 伴飞计算机（MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN）."""
+        device = self._devices.get(device_id)
+        if not device:
+            return {"success": False, "error": f"设备 {device_id} 未找到"}
+
+        if component not in _REBOOT_COMPONENTS:
+            return {"success": False, "error": f"不支持的重启对象: {component}"}
+
+        if device.metadata.get("arm_state") == "已解锁":
+            return {
+                "success": False,
+                "error": "设备已解锁，禁止远程重启，请先降落并上锁",
+            }
+
+        channel = self._find_channel_for_device(device)
+        if channel is None:
+            return {"success": False, "error": f"设备 {device_id} 无可用连接"}
+        if channel.simulated:
+            return {"success": False, "error": "模拟模式下不支持远程重启"}
+        if not channel.connection:
+            return {"success": False, "error": f"设备 {device_id} 无可用连接"}
+
+        conn = channel.connection
+        target = self._get_target_system(device)
+        param1 = _REBOOT_COMPONENTS[component]
+
+        def do_reboot() -> None:
+            from pymavlink import mavutil  # noqa: PLC0415
+
+            conn.mav.command_long_send(
+                target, 0,
+                mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+                0, param1, 0, 0, 0, 0, 0, 0,
+            )
+
+        await channel.send_to_device(target, do_reboot)
+        logger.info("已向设备 %s 下发重启指令 (component=%s)", device_id, component)
+        return {"success": True, "device_id": device_id, "component": component}
+
+    def get_status_texts(
+        self,
+        device_id: str,
+        since: float = 0.0,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """增量查询飞控文本日志（STATUSTEXT）."""
+        device = self._devices.get(device_id)
+        if not device:
+            return {"success": False, "error": f"设备 {device_id} 未找到"}
+
+        channel = self._find_channel_for_device(device)
+        entries = (
+            list(channel.status_texts.get(device_id, []))
+            if channel else []
+        )
+        matched = sorted(
+            (entry for entry in entries if entry["time"] > since),
+            key=lambda entry: entry["time"],
+        )
+        selected = matched[:limit]
+        next_since = selected[-1]["time"] if selected else since
+
+        return {
+            "success": True,
+            "device_id": device_id,
+            "since": since,
+            "count": len(selected),
+            "has_more": len(matched) > len(selected),
+            "next_since": next_since,
+            "status_texts": selected,
+        }
 
     # ── TCP 主动连接管理 ──────────────────────────────────────
 

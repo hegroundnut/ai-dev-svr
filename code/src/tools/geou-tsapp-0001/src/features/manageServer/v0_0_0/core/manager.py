@@ -302,6 +302,29 @@ class EdgeManager:
             "device_id": device_id,
         })
 
+    def forward_reboot_drone(
+        self, box_id: str, device_id: str, component: str = "autopilot"
+    ) -> Dict[str, Any]:
+        """通过 WS 转发远程重启指令到指定类脑盒子"""
+        return self._send_command_to_box(box_id, "reboot_drone", {
+            "device_id": device_id,
+            "component": component,
+        })
+
+    def forward_drone_logs(
+        self,
+        box_id: str,
+        device_id: str,
+        since: float = 0.0,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """通过 WS 增量查询飞控文本日志（STATUSTEXT）"""
+        return self._send_command_to_box(box_id, "drone_logs", {
+            "device_id": device_id,
+            "since": since,
+            "limit": limit,
+        })
+
     # ==================================================================
     #  导航任务
     # ==================================================================

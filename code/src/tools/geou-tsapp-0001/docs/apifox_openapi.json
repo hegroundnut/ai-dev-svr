@@ -892,6 +892,95 @@
         }
       }
     },
+    "/api/manageServer/CmanageServer/reboot_drone": {
+      "post": {
+        "tags": ["manageServer-设备运维"],
+        "summary": "远程重启无人机飞控/伴飞计算机",
+        "description": "按 box_id 经 WS 转发到类脑盒子，底层发送 MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN（ID 246）。\ncomponent: autopilot（1，默认）/ companion（2）/ both（3）。\n接口返回成功仅表示指令已下发，飞控约 9 秒后完成重启；已解锁状态会被拦截。",
+        "operationId": "reboot_drone",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "device_id"],
+                "properties": {
+                  "box_id": { "type": "string", "description": "类脑盒子 ID" },
+                  "device_id": { "type": "string", "description": "无人机设备 ID" },
+                  "component": { "type": "string", "enum": ["autopilot", "companion", "both"], "default": "autopilot", "description": "重启对象" }
+                }
+              },
+              "example": { "box_id": "brain_box_004", "device_id": "drone_real_002", "component": "autopilot" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功/失败（业务错误 code=-1）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "success": true, "device_id": "drone_real_002", "component": "autopilot",
+                    "message": "重启指令已下发，设备将短暂离线后重新连接"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/manageServer/CmanageServer/drone_logs": {
+      "post": {
+        "tags": ["manageServer-设备运维"],
+        "summary": "增量查询飞控文本日志（STATUSTEXT）",
+        "description": "按 box_id 经 WS 转发到类脑盒子。盒子本地环形缓存每设备最近 300 条 STATUSTEXT。\n支持 since 增量游标（只返回 time > since 的条目，不传从头开始）与 limit（默认 20，上限 300）。\n若 has_more=true，用返回的 next_since 继续请求，直到 has_more=false。",
+        "operationId": "drone_logs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["box_id", "device_id"],
+                "properties": {
+                  "box_id": { "type": "string", "description": "类脑盒子 ID" },
+                  "device_id": { "type": "string", "description": "无人机设备 ID" },
+                  "since": { "type": "number", "description": "时间游标（Unix 秒，可带小数）；只返回 time > since 的条目" },
+                  "limit": { "type": "integer", "default": 20, "minimum": 1, "maximum": 300, "description": "单次最多返回条数" }
+                }
+              },
+              "example": { "box_id": "brain_box_004", "device_id": "drone_real_002", "since": 1762934420.31, "limit": 100 }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功/失败（业务错误 code=-1）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "success": true, "device_id": "drone_real_002", "since": 1762934400.0,
+                    "count": 2, "has_more": false, "next_since": 1762934420.31,
+                    "status_texts": [
+                      { "text": "EKF3 IMU0 started relative aiding", "severity": 6, "severity_name": "INFO", "time": 1762934412.09 },
+                      { "text": "Arm: LAND mode not armable", "severity": 2, "severity_name": "CRITICAL", "time": 1762934420.31 }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/brainBox/CbrainBox/get_config": {
       "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
       "post": {
@@ -1008,6 +1097,94 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Envelope" },
                 "example": { "code": 0, "msg": "success", "data": { "protocols": ["mavlink"] } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/brainBox/CbrainBox/reboot_drone": {
+      "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
+      "post": {
+        "tags": ["brainBox"],
+        "summary": "远程重启无人机飞控/伴飞计算机（盒子直连）",
+        "description": "盒子直连入口，不需要 box_id。底层发送 MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN（ID 246）。\ncomponent: autopilot（1，默认）/ companion（2）/ both（3）。已解锁状态会被拦截；模拟模式下返回失败。",
+        "operationId": "brainbox_reboot_drone",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["device_id"],
+                "properties": {
+                  "device_id": { "type": "string", "description": "无人机设备 ID" },
+                  "component": { "type": "string", "enum": ["autopilot", "companion", "both"], "default": "autopilot", "description": "重启对象" }
+                }
+              },
+              "example": { "device_id": "drone_real_002", "component": "autopilot" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功/失败（业务错误 code=-1）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "success": true, "device_id": "drone_real_002", "component": "autopilot",
+                    "message": "重启指令已下发，设备将短暂离线后重新连接"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/brainBox/CbrainBox/drone_logs": {
+      "servers": [{ "url": "http://localhost:15001", "description": "brainBox（类脑盒子）" }],
+      "post": {
+        "tags": ["brainBox"],
+        "summary": "增量查询飞控文本日志（STATUSTEXT，盒子直连）",
+        "description": "盒子直连入口，不需要 box_id。盒子本地环形缓存每设备最近 300 条 STATUSTEXT。\nsince 为增量游标（只返回 time > since），limit 默认 20、上限 300；has_more=true 时用 next_since 继续拉取。",
+        "operationId": "brainbox_drone_logs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["device_id"],
+                "properties": {
+                  "device_id": { "type": "string", "description": "无人机设备 ID" },
+                  "since": { "type": "number", "description": "时间游标（Unix 秒，可带小数）" },
+                  "limit": { "type": "integer", "default": 20, "minimum": 1, "maximum": 300, "description": "单次最多返回条数" }
+                }
+              },
+              "example": { "device_id": "drone_real_002", "since": 1762934420.31, "limit": 100 }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功/失败（业务错误 code=-1）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Envelope" },
+                "example": {
+                  "code": 0, "msg": "success",
+                  "data": {
+                    "success": true, "device_id": "drone_real_002", "since": 0.0,
+                    "count": 1, "has_more": false, "next_since": 1762934420.31,
+                    "status_texts": [
+                      { "text": "Arm: LAND mode not armable", "severity": 2, "severity_name": "CRITICAL", "time": 1762934420.31 }
+                    ]
+                  }
+                }
               }
             }
           }

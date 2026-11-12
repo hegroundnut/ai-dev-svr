@@ -37,6 +37,10 @@
     navigation_instruction  下发导航指令（经由类脑盒子到无人机）
     execute_trajectory      下发航点任务（waypoint_mission）到类脑盒子
 
+  设备运维:
+    reboot_drone          远程重启无人机飞控/伴飞计算机
+    drone_logs            增量查询飞控文本日志（STATUSTEXT）
+
   设备查询:
     list_devices          获取所有已知无人机设备列表
     get_device_info       获取设备详细信息
@@ -141,6 +145,23 @@ get_modes:
     "box_id": "brain_box_001",
     "device_id": "drone_sim_0"
 }
+
+reboot_drone:
+{
+    "box_id": "brain_box_001",
+    "device_id": "drone_sim_0",
+    "component": "autopilot"
+}
+
+drone_logs:
+{
+    "box_id": "brain_box_001",
+    "device_id": "drone_sim_0",
+    "since": 1762934420.31,
+    "limit": 100
+}
+说明: reboot_drone 的 component 可选 autopilot（默认）/ companion / both；
+     drone_logs 的 since 为增量游标（不传从头开始），limit 默认 20、上限 300。
 
 navigation_instruction:
 {
@@ -465,6 +486,40 @@ class CmanageServer:
         )
         result = self._manager.execute_trajectory(params)
         return self._handle_result("execute_trajectory", result)
+
+    # ==================================================================
+    #  设备运维
+    # ==================================================================
+
+    def reboot_drone(self, params):
+        """远程重启无人机飞控/伴飞计算机"""
+        box_id = params.get("box_id", "")
+        device_id = params.get("device_id", "")
+        component = params.get("component", "autopilot")
+        self.progress_callback(
+            10,
+            f"正在下发重启指令 (brain_box={box_id}, device={device_id}, "
+            f"component={component})",
+        )
+        result = self._manager.forward_reboot_drone(
+            box_id, device_id, component
+        )
+        return self._handle_result("reboot_drone", result)
+
+    def drone_logs(self, params):
+        """增量查询飞控文本日志（STATUSTEXT）"""
+        box_id = params.get("box_id", "")
+        device_id = params.get("device_id", "")
+        self.progress_callback(
+            10, f"正在查询无人机日志 (brain_box={box_id}, device={device_id})"
+        )
+        result = self._manager.forward_drone_logs(
+            box_id,
+            device_id,
+            since=params.get("since", 0.0),
+            limit=params.get("limit", 20),
+        )
+        return self._handle_result("drone_logs", result)
 
     # ==================================================================
     #  设备查询

@@ -94,6 +94,8 @@ class BrainBoxManager:
             "instruction": ("navigation_instruction", True, True),
             "execute": ("execute_trajectory", True, True),
             "waypoint_mission": ("waypoint_mission", True, True),
+            "reboot_drone": ("reboot_drone", True, True),
+            "drone_logs": ("drone_logs", True, True),
             "trajectories": ("list_trajectories", False, False),
             "algorithms": ("list_algorithms", False, False),
             "list_tasks": ("list_tasks", False, True),
@@ -268,6 +270,59 @@ class BrainBoxManager:
         )
         if result.get("success", False):
             return {"code": 0, "msg": "航点任务已下发并启动", "data": result}
+        return {"code": -1, "msg": result.get("error", ""), "data": result}
+
+    async def reboot_drone(self, params: dict[str, Any]) -> dict[str, Any]:
+        """远程重启无人机飞控 / 伴飞计算机."""
+        device_id = params.get("device_id", "")
+        component = params.get("component", "autopilot")
+        if not device_id:
+            error = "缺少必要参数: device_id"
+            return {"code": -1, "msg": error, "data": {"success": False, "error": error}}
+
+        result = await self._mavlink.reboot(device_id, component)
+        if result.get("success", False):
+            return {
+                "code": 0,
+                "msg": "success",
+                "data": {
+                    "success": True,
+                    "device_id": device_id,
+                    "component": component,
+                    "message": "重启指令已下发，设备将短暂离线后重新连接",
+                },
+            }
+        return {"code": -1, "msg": result.get("error", ""), "data": result}
+
+    async def drone_logs(self, params: dict[str, Any]) -> dict[str, Any]:
+        """增量查询飞控文本日志（STATUSTEXT）."""
+        device_id = params.get("device_id", "")
+        if not device_id:
+            error = "缺少必要参数: device_id"
+            return {"code": -1, "msg": error, "data": {"success": False, "error": error}}
+
+        raw_since = params.get("since", 0.0)
+        try:
+            since = float(raw_since)
+        except (TypeError, ValueError):
+            error = f"since 参数非法: {raw_since}（应为 Unix 秒时间戳）"
+            return {"code": -1, "msg": error, "data": {"success": False, "error": error}}
+
+        raw_limit = params.get("limit", 20)
+        try:
+            if isinstance(raw_limit, bool):
+                raise ValueError
+            limit = int(raw_limit)
+            if limit < 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            error = f"limit 参数非法: {raw_limit}"
+            return {"code": -1, "msg": error, "data": {"success": False, "error": error}}
+        limit = min(limit, 300)
+
+        result = self._mavlink.get_status_texts(device_id, since=since, limit=limit)
+        if result.get("success", False):
+            return {"code": 0, "msg": "success", "data": result}
         return {"code": -1, "msg": result.get("error", ""), "data": result}
 
     def list_trajectories(self) -> dict[str, Any]:

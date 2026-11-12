@@ -96,6 +96,29 @@ class CbrainBox:
         return self._manager.list_protocols()
 
     # ------------------------------------------------------------------
+    #  无人机远程重启 & 日志查询
+    # ------------------------------------------------------------------
+
+    def reboot_drone(self, params: dict) -> dict:
+        """远程重启无人机飞控 / 伴飞计算机."""
+        return self._run_async(
+            self._manager.reboot_drone(params), timeout=15.0
+        )
+
+    def drone_logs(self, params: dict) -> dict:
+        """增量查询飞控文本日志（STATUSTEXT）."""
+        return self._run_async(
+            self._manager.drone_logs(params), timeout=10.0
+        )
+
+    def _run_async(self, coro, timeout: float = 15.0):
+        """在 brainBox 异步线程中执行协程并等待结果."""
+        if self._loop is None:
+            raise RuntimeError("brainBox 异步服务未启动")
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
+
+    # ------------------------------------------------------------------
     #  Cleanup
     # ------------------------------------------------------------------
 

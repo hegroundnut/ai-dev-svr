@@ -113,6 +113,13 @@ POST /api/manageServer/CmanageServer/{subfunc}
 | `get_device_info` | 获取设备详情（需 box_id + device_id） | `{"box_id": "brain_box_001", "device_id": "drone_sim_0"}` |
 | `list_tasks` | 查询导航任务列表 | `{"box_id": "all"}` 或 `{"box_id": "brain_box_001"}` |
 
+### 设备运维
+
+| subfunc | 说明 | 参数示例 |
+|---------|------|----------|
+| `reboot_drone` | 远程重启无人机飞控/伴飞计算机（MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN）；已解锁会被拦截 | `{"box_id": "brain_box_001", "device_id": "drone_sim_0", "component": "autopilot"}`，component 可选 `autopilot`/`companion`/`both` |
+| `drone_logs` | 增量查询飞控文本日志（STATUSTEXT，盒子缓存每设备最近 300 条） | `{"box_id": "brain_box_001", "device_id": "drone_sim_0", "since": 1762934420.31, "limit": 100}`，since 不传从头开始，limit 默认 20、上限 300 |
+
 ### 响应格式
 
 所有接口统一返回:

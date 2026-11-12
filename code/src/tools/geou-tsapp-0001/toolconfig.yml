@@ -153,6 +153,25 @@ tools_sync_cfgs: {
                                 }
                             },
                             {
+                                "func_name": "reboot_drone",
+                                "func_desc": "远程重启无人机飞控/伴飞计算机（MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN）",
+                                "params": {
+                                    "box_id": "目标类脑盒子标识符",
+                                    "device_id": "目标无人机设备 ID",
+                                    "component": "可选，重启对象：autopilot（默认）/ companion / both"
+                                }
+                            },
+                            {
+                                "func_name": "drone_logs",
+                                "func_desc": "增量查询飞控文本日志（STATUSTEXT，盒子本地缓存最近 300 条）",
+                                "params": {
+                                    "box_id": "目标类脑盒子标识符",
+                                    "device_id": "目标无人机设备 ID",
+                                    "since": "可选，Unix 秒时间游标，只返回 time > since 的条目；不传从头开始",
+                                    "limit": "可选，单次最多返回条数，默认 20，上限 300"
+                                }
+                            },
+                            {
                                 "func_name": "list_devices",
                                 "func_desc": "获取所有已知无人机设备列表（由类脑盒子上报，按 box_id 过滤）",
                                 "params": {
